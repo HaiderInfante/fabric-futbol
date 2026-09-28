@@ -216,3 +216,22 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---------------------------------------------------------------------------
+# Proyecto fabric-futbol
+# ---------------------------------------------------------------------------
+
+# Secretos: cualquier variante de .env, excepto la plantilla
+.env.*
+!.env.example
+
+# Power BI: solo se versiona el formato PBIP, nunca el binario ni la caché local
+*.pbix
+**/.pbi/localSettings.json
+**/.pbi/cache.abf
+
+# Muestras descargadas localmente durante la exploración (pueden ser grandes)
+data/samples/
+
+# Configuración local de Claude Code
+.claude/settings.local.json

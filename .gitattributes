@@ -1,0 +1,9 @@
+# Fabric escribe los ítems con saltos de línea LF. Normalizar todo el repo a LF evita diffs
+# espurios entre los commits hechos desde Fabric y los hechos localmente en Windows.
+* text=auto eol=lf
+
+# Binarios
+*.png binary
+*.jpg binary
+*.pbix binary
+*.abf binary
