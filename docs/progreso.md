@@ -5,7 +5,7 @@ Estado por fase. Una fase se marca como terminada solo cuando se confirma su cri
 
 | Fase | Nombre | Estado |
 |---|---|---|
-| 0 | Setup | 🟡 En curso |
+| 0 | Setup | ✅ Terminada (2026-09-28) |
 | 1 | Exploración de fuentes | ⚪ Pendiente |
 | 2 | Bronze | ⚪ Pendiente |
 | 3 | Silver | ⚪ Pendiente |
@@ -20,30 +20,43 @@ Estado por fase. Una fase se marca como terminada solo cuando se confirma su cri
 
 ---
 
-## Fase 0 — Setup
+## Fase 0 — Setup ✅
 
 **Criterio de terminado:** el repo existe, DEV está sincronizado y las 3 fuentes responden.
+Confirmado el 2026-09-28.
 
-### Hecho
+### Construido
 
-- [x] Estructura de carpetas del repositorio (sección 6 de CLAUDE.md).
-- [x] `.gitignore` ampliado (variantes de `.env`, binarios de Power BI, muestras locales).
-- [x] `.env.example` con keys y URLs base de las 3 fuentes.
-- [x] `requirements.txt`, `requirements-dev.txt` y `pyproject.toml` (ruff + pytest).
-- [x] `scripts/check_access.py`, probado con keys ausentes y con keys inválidas.
-- [x] StatsBomb Open Data responde (24 competiciones, 80 temporadas).
-- [x] README, `docs/decisiones.md` (ADR-001 a ADR-004) y esqueletos de `diccionario_datos.md`
-      y `dp700_mapa.md`.
+- Estructura de carpetas del repositorio (sección 6 de CLAUDE.md).
+- `.gitignore` ampliado (variantes de `.env`, binarios de Power BI, muestras locales) y
+  `.gitattributes` con normalización a LF.
+- `.env.example` con keys y URLs base de las 3 fuentes.
+- `requirements.txt`, `requirements-dev.txt` y `pyproject.toml` (ruff + pytest).
+- `scripts/check_access.py`, probado con keys ausentes, keys inválidas y keys válidas.
+- README, `docs/decisiones.md` (ADR-001 a ADR-004) y esqueletos de `diccionario_datos.md` y
+  `dp700_mapa.md`.
 
-### Pendiente
+### Configurado en el portal
 
-- [ ] Obtener las keys de football-data.org y API-Football y cargarlas en `.env`.
-- [ ] `check_access.py` devuelve OK en las 3 fuentes.
-- [ ] Verificar los tenant settings de Git integration en el Admin portal.
-- [ ] Conectar `ws_futbol_dev` a GitHub (`main`, carpeta `fabric`).
-- [ ] Proteger `main` con un ruleset en GitHub.
-- [ ] Mergear el PR de la Fase 0.
+- Tenant settings de Git integration (Git y GitHub) habilitados.
+- PAT fine-grained `fabric-git-dev`: solo sobre `fabric-futbol`, Contents read/write, **vence en
+  90 días (~2026-12-27)**. Al renovarlo hay que actualizar la cuenta en Fabric.
+- `ws_futbol_dev` conectado a `HaiderInfante/fabric-futbol`, rama `main`, carpeta `fabric`.
+  Source control en 0.
+- Ruleset `protect-main`: bloquea borrado y force push, exige PR con 0 aprobaciones, sin bypass.
 
-### Notas
+### Evidencia
 
+```
+[OK     ] football-data.org    HTTP 200, 13 competiciones visibles, llamadas disponibles este minuto: 9
+[OK     ] API-Football         HTTP 200, plan Free, uso hoy: 0/100
+[OK     ] StatsBomb Open Data  HTTP 200, 24 competiciones y 80 temporadas disponibles
+```
+
+### Pendientes y notas para fases siguientes
+
+- Confirmar que `ws_futbol_test` y `ws_futbol_prod` están asignados a la capacidad Trial
+  (necesario en la Fase 8).
+- football-data.org muestra 13 competiciones y no las 12 documentadas del plan gratuito: en la
+  Fase 1 hay que comprobar a cuáles hay acceso real a partidos.
 - Azure CLI, `ms-fabric-cli` y `fabric-cicd` se instalarán cuando una fase los necesite.
