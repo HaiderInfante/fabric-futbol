@@ -58,3 +58,8 @@ Formato breve: contexto → decisión → alternativas descartadas → consecuen
   añadir al administrador al bypass list (anula el propósito de la protección).
 - **Consecuencias:** se practica el flujo de ramas de Fabric que evalúa el DP-700. Los ítems que
   sirvan de plantilla (regla 5 de CLAUDE.md) se crearán con alguna de estas dos vías.
+- **Evidencia (2026-09-28):** al conectar `ws_futbol_dev` con la carpeta `fabric` (que no existía),
+  Fabric hizo un commit directo a `main` (`4481ba6 Creating directory fabric`, crea
+  `fabric/Readme.md`). Por eso el ruleset `protect-main` se activó **después** de conectar. Si hay
+  que reconectar un workspace a una carpeta nueva con `main` ya protegida, conviene crear antes la
+  carpeta mediante un PR.
