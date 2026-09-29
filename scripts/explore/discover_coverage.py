@@ -322,7 +322,7 @@ def main() -> None:
 
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     report_path = PROFILES_DIR / "cobertura.md"
-    report_path.write_text(render_report(fd, af, sb_rows), encoding="utf-8")
+    report_path.write_text(render_report(fd, af, sb_rows), encoding="utf-8", newline="\n")
     logger.info("Informe generado en %s", report_path)
 
 

@@ -48,8 +48,29 @@ CANDIDATES = [
 ]
 
 
+@dataclass(frozen=True)
+class ScopeEntry:
+    """Competición y temporadas elegidas por fuente (ADR-005)."""
+
+    name: str
+    fd_code: str
+    fd_seasons: tuple[int | str, ...]  # año de inicio o "current"
+    af_league_id: int
+    af_season: int
+    sb_competition_id: int
+    sb_season_id: int
+
+
+SELECTED_SCOPE = [
+    ScopeEntry("Premier League", "PL", (2024, "current"), 39, 2024, 2, 27),
+    ScopeEntry("La Liga", "PD", (2024, "current"), 140, 2024, 11, 90),
+    ScopeEntry("UEFA Euro 2024", "EC", (2024,), 4, 2024, 55, 282),
+]
+
+
 def setup() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")  # logging escribe en stderr
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
