@@ -233,5 +233,8 @@ __marimo__/
 # Muestras descargadas localmente durante la exploración (pueden ser grandes)
 data/samples/
 
+# Estado local (contador de presupuesto de llamadas, etc.)
+.state/
+
 # Configuración local de Claude Code
 .claude/settings.local.json
