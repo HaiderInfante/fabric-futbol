@@ -22,8 +22,10 @@ fase y se revisa entero en la Fase 11.
 
 | Subtema del examen | Dónde se practica | Fase |
 |---|---|---|
-| Design and implement loading patterns | _Pendiente_ | 2–4 |
-| Ingest and transform batch data | _Pendiente_ | 2–4 |
+| Design and implement loading patterns → *Design and implement full and incremental data loads* (análisis de candidatos a watermark: `lastUpdated` descartado, `last_updated` de StatsBomb válido; presupuesto como restricción del incremental) | `docs/diccionario_datos.md` §2, §4 y §7; ADR-005 | 1 (diseño) / 2 (implementación) |
+| Design and implement loading patterns → *Prepare data for loading into a dimensional model* (claves naturales, mapeo entre fuentes) | `docs/diccionario_datos.md` §6 | 1 / 3 |
+| Ingest and transform batch data → *Handle duplicate, missing, and late-arriving data* (estados de partido, reprogramaciones, eventos sin id propio) | `docs/diccionario_datos.md` §2 y §3 | 1 / 3 |
+| Ingest and transform batch data → *Choose an appropriate data store* (volúmenes medidos por fuente) | `docs/diccionario_datos.md` §7 | 1 / 2 |
 | Ingest and transform streaming data | _Pendiente_ | 6 |
 
 ## 3. Monitor and optimize an analytics solution (30–35 %)
