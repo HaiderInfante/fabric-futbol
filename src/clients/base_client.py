@@ -89,6 +89,8 @@ class ApiClient:
         if headers:
             self.session.headers.update(headers)
         self.calls_made = 0
+        # Última respuesta recibida: permite leer headers de cuota (p. ej. llamadas restantes).
+        self.last_response: requests.Response | None = None
 
     def _consume_budgets(self) -> None:
         # Se verifica todo antes de consumir, para no descontar de un presupuesto si otro está
@@ -132,6 +134,7 @@ class ApiClient:
                 logger.debug("GET %s params=%s (intento %d)", url, params, attempt + 1)
                 response = self.session.get(url, params=params, timeout=self.timeout_seconds)
                 self.calls_made += 1
+                self.last_response = response
             except (requests.ConnectionError, requests.Timeout) as exc:
                 self.calls_made += 1
                 reason = type(exc).__name__
