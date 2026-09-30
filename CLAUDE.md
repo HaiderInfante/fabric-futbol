@@ -44,17 +44,20 @@ Reglas de trabajo:
 
 | # | Fuente | Tipo | Qué aporta | Patrón de carga | Límites a respetar |
 |---|---|---|---|---|---|
-| 1 | **football-data.org** | API REST (key gratuita) | Competiciones, equipos, partidos, tablas de posiciones, goleadores | Incremental por fecha (`dateFrom`/`dateTo`) y `lastUpdated` | 10 llamadas/min, temporada actual, 12 competiciones en plan gratuito |
-| 2 | **API-Football (api-sports)** | API REST (key gratuita) | Estadísticas de partido, alineaciones, jugadores, lesiones | Incremental por `fixture_id` nuevo o actualizado | 100 llamadas/día en plan gratuito → presupuesto diario de llamadas |
-| 3 | **StatsBomb Open Data** | Archivos JSON en GitHub | Histórico de eventos (pases, tiros con xG), alineaciones, 360 | Incremental basado en archivos (nuevos `match_id`) | Atribución obligatoria a StatsBomb en cualquier publicación |
+| 1 | **football-data.org** | API REST (key gratuita) | Competiciones, equipos, partidos, tablas de posiciones, goleadores | Ventana de fechas (`dateFrom`/`dateTo`) con margen hacia atrás + `MERGE` por `id`. `lastUpdated` **no** sirve como watermark (es el mismo para toda la competición) | 10 llamadas/min; temporadas desde 2023; 12 competiciones `TIER_ONE` |
+| 2 | **API-Football (api-sports)** | API REST (key gratuita) | Estadísticas de partido, alineaciones, jugadores, lesiones, estadio | Relleno histórico por `fixture_id` pendiente, limitado por el presupuesto diario (~20 días para el alcance de ADR-005) | 100 llamadas/día y 10/min; **solo temporadas 2022–2024**; sin parámetro `ids` (1 llamada por partido y endpoint) |
+| 3 | **StatsBomb Open Data** | Archivos JSON en GitHub | Histórico de eventos (pases, tiros con xG), alineaciones, 360 | Incremental basado en archivos: `match_id` nuevo o `last_updated` cambiado | Atribución obligatoria a StatsBomb en cualquier publicación; sin fecha de nacimiento de jugadores; ~1,7 GB de JSON en el alcance |
 | 4 | **Simulador en tiempo real** | Script Python propio | Reproduce eventos StatsBomb de un partido como stream | Streaming → Eventstream | — |
 
-Requisitos para las APIs:
-- Cliente HTTP reutilizable con **rate limiting, reintentos con backoff exponencial, paginación y logging**.
-- Un **contador de presupuesto de llamadas** persistido (sobre todo para API-Football) que detenga la ingesta antes de exceder el límite.
-- Guardar siempre la respuesta cruda en Bronze antes de transformar.
+Alcance (competiciones y temporadas por fuente): Premier League, La Liga y Euro 2024, según `docs/decisiones.md` (ADR-005). Límites verificados contra las APIs el 2026-09-29 (`docs/perfiles/cobertura.md`); detalle de entidades, claves y presupuesto en `docs/diccionario_datos.md`.
 
-Reto de integración (obligatorio): los IDs de equipos, jugadores y competiciones **son distintos en cada fuente**. Construye tablas de mapeo (`map_team`, `map_player`) con reglas de coincidencia (nombre normalizado, país, fecha de nacimiento) y una cola de revisión manual para casos ambiguos. Esto alimenta dimensiones conformadas en Gold.
+Requisitos para las APIs:
+- Cliente HTTP reutilizable con **rate limiting, reintentos con backoff exponencial, paginación y logging** (ya existe en `src/clients/`, ADR-006).
+- Un **contador de presupuesto de llamadas** persistido (sobre todo para API-Football) que detenga la ingesta antes de exceder el límite. Sincronizarlo con el header `x-ratelimit-requests-remaining`, porque `/status` se actualiza con retraso.
+- Guardar siempre la respuesta cruda en Bronze antes de transformar.
+- Las APIs usan "full time" con significados distintos (football-data suma la tanda de penaltis; API-Football es solo el tiempo reglamentario): aplicar la regla de goles de `docs/diccionario_datos.md` §5.
+
+Reto de integración (obligatorio): los IDs de equipos, jugadores y competiciones **son distintos en cada fuente**. Construye tablas de mapeo (`map_team`, `map_player`) con reglas de coincidencia (nombre normalizado, país, fecha de nacimiento) y una cola de revisión manual para casos ambiguos. Esto alimenta dimensiones conformadas en Gold. Línea base medida: coincide el 65 % de los clubes y el 96 % de las selecciones con una normalización simple; StatsBomb no aporta fecha de nacimiento, así que con esa fuente habrá más casos en revisión manual.
 
 ---
 

@@ -6,7 +6,7 @@ Estado por fase. Una fase se marca como terminada solo cuando se confirma su cri
 | Fase | Nombre | Estado |
 |---|---|---|
 | 0 | Setup | ✅ Terminada (2026-09-28) |
-| 1 | Exploración de fuentes | 🟡 Pendiente de confirmar el criterio |
+| 1 | Exploración de fuentes | ✅ Terminada (2026-09-29) |
 | 2 | Bronze | ⚪ Pendiente |
 | 3 | Silver | ⚪ Pendiente |
 | 4 | Gold | ⚪ Pendiente |
@@ -63,10 +63,16 @@ Confirmado el 2026-09-28.
 
 ---
 
-## Fase 1 — Exploración de fuentes 🟡
+## Fase 1 — Exploración de fuentes ✅
 
 **Criterio de terminado:** diccionario completo y decisión documentada de qué competiciones y
-temporadas usar.
+temporadas usar. Confirmado el 2026-09-29.
+
+### Configurado
+
+- Ruleset `protect-main`: se añadió el check obligatorio `lint-test` (CI).
+- Capacidad Trial revisada: su vigencia cubre el relleno de API-Football.
+- Sección 3 de `CLAUDE.md` actualizada con los límites y patrones verificados.
 
 ### Construido
 
@@ -102,5 +108,5 @@ temporadas usar.
 - Fase 2: decidir cómo llega `src/` a los notebooks de Fabric (wheel en un Environment, `%run` o
   código embebido).
 - Fase 2: sincronizar `ctl_api_budget` con el header `x-ratelimit-requests-remaining`.
-- Revisar en el portal cuándo vence la capacidad Trial: el relleno de API-Football necesita ~20
-  días de ejecuciones diarias.
+- ~~Revisar en el portal cuándo vence la capacidad Trial~~ Revisado el 2026-09-29: cubre los ~20
+  días de relleno de API-Football.
