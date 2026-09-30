@@ -55,12 +55,24 @@ python scripts/check_access.py
 responden. La llamada a API-Football usa `/status`, que según la documentación de api-sports no
 consume la cuota diaria.
 
+Exploración de fuentes (Fase 1). Los scripts se ejecutan como módulos desde la raíz del repo:
+
+```powershell
+python -m scripts.explore.discover_coverage          # cobertura real de los planes gratuitos
+python -m scripts.explore.download_samples --dry-run # plan y coste estimado de la descarga
+python -m scripts.explore.download_samples           # muestras crudas en data/samples/
+python -m scripts.explore.profile_samples            # perfiles en docs/perfiles/
+```
+
+El presupuesto diario de API-Football se lleva en `.state/api_budget.json` (ignorado por Git) y
+los scripts nunca tocan las 10 últimas llamadas del día.
+
 Calidad de código:
 
 ```powershell
 ruff check .
 ruff format --check .
-pytest   # los primeros tests llegan en la Fase 3
+pytest
 ```
 
 ## Estructura del repositorio
@@ -70,6 +82,7 @@ fabric/          ítems de Fabric sincronizados con ws_futbol_dev (no editar a m
 src/clients/     clientes HTTP de cada API
 src/transformations/  lógica PySpark reutilizable y testeable
 src/simulator/   simulador de eventos en tiempo real
+src/exploration/ perfilado de JSON (exploración de fuentes)
 sql/             scripts T-SQL del Warehouse
 kql/             consultas KQL
 tests/           pytest

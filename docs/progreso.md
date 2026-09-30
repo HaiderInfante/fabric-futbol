@@ -6,7 +6,7 @@ Estado por fase. Una fase se marca como terminada solo cuando se confirma su cri
 | Fase | Nombre | Estado |
 |---|---|---|
 | 0 | Setup | ✅ Terminada (2026-09-28) |
-| 1 | Exploración de fuentes | ⚪ Pendiente |
+| 1 | Exploración de fuentes | 🟡 Pendiente de confirmar el criterio |
 | 2 | Bronze | ⚪ Pendiente |
 | 3 | Silver | ⚪ Pendiente |
 | 4 | Gold | ⚪ Pendiente |
@@ -55,8 +55,52 @@ Confirmado el 2026-09-28.
 
 ### Pendientes y notas para fases siguientes
 
-- Confirmar que `ws_futbol_test` y `ws_futbol_prod` están asignados a la capacidad Trial
-  (necesario en la Fase 8).
-- football-data.org muestra 13 competiciones y no las 12 documentadas del plan gratuito: en la
-  Fase 1 hay que comprobar a cuáles hay acceso real a partidos.
+- ~~Confirmar que `ws_futbol_test` y `ws_futbol_prod` están asignados a la capacidad Trial~~
+  Confirmado el 2026-09-28: los tres workspaces están en la Trial.
+- ~~football-data.org muestra 13 competiciones y no las 12 documentadas~~ Resuelto en la Fase 1:
+  son las 12 `TIER_ONE` más la Copa Libertadores (`TIER_FOUR`).
 - Azure CLI, `ms-fabric-cli` y `fabric-cicd` se instalarán cuando una fase los necesite.
+
+---
+
+## Fase 1 — Exploración de fuentes 🟡
+
+**Criterio de terminado:** diccionario completo y decisión documentada de qué competiciones y
+temporadas usar.
+
+### Construido
+
+- Clientes HTTP reutilizables en `src/clients/`: base con rate limiting, reintentos y
+  presupuesto; uno por fuente (ADR-006).
+- CI mínima en GitHub Actions (`ruff` + `pytest` en cada PR).
+- `scripts/explore/discover_coverage.py` genera la matriz de cobertura real de los planes
+  gratuitos ([perfiles/cobertura.md](perfiles/cobertura.md)).
+- `scripts/explore/download_samples.py` descarga muestras crudas del alcance elegido.
+- `src/exploration/json_profiler.py` y `scripts/explore/profile_samples.py` generan los perfiles
+  por fuente en `docs/perfiles/`.
+- [diccionario_datos.md](diccionario_datos.md): entidades, claves, semántica del marcador,
+  mapeo entre fuentes, presupuesto de llamadas y volumen.
+- ADR-005 (competiciones y temporadas) y ADR-006 (clientes HTTP).
+- 38 tests en verde.
+
+### Hallazgos clave
+
+- API-Football gratis: solo temporadas 2022–2024, 100/día y 10/min, **sin el parámetro `ids`**.
+- football-data: temporadas desde 2023. `lastUpdated` no sirve como watermark por partido.
+- `fullTime` de football-data suma la tanda de penaltis, y `fulltime` de API-Football es solo el
+  tiempo reglamentario.
+- StatsBomb no trae fecha de nacimiento de los jugadores.
+- Coincidencia de equipos con normalización simple: 65 % en clubes y 96 % en selecciones.
+
+### Consumo de la exploración
+
+- API-Football: 29 llamadas según el contador local (conservador); unas 20 según la API.
+- football-data: ~40 llamadas. StatsBomb: ~22 descargas.
+
+### Pendientes y notas para fases siguientes
+
+- Fase 2: decidir cómo llega `src/` a los notebooks de Fabric (wheel en un Environment, `%run` o
+  código embebido).
+- Fase 2: sincronizar `ctl_api_budget` con el header `x-ratelimit-requests-remaining`.
+- Revisar en el portal cuándo vence la capacidad Trial: el relleno de API-Football necesita ~20
+  días de ejecuciones diarias.
