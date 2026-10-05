@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "VariableLibrary",
+    "displayName": "vl_futbol"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "991d21cd-128a-9b92-4978-be9129463b44"
+  }
+}

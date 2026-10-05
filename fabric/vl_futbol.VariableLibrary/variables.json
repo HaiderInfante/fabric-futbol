@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/variableLibrary/definition/variables/1.0.0/schema.json",
+  "variables": [
+    {
+      "name": "key_vault_url",
+      "note": "",
+      "type": "String",
+      "value": "https://kv-futbol-dev-hi01.vault.azure.net/"
+    }
+  ]
+}
