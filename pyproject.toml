@@ -1,3 +1,22 @@
+# Empaquetado de src/ como wheel para el Environment env_futbol de Fabric (ADR-008).
+# El paquete de nivel superior es `src`, igual que en los tests locales, para que los imports
+# (`from src.clients...`) sean idénticos en local y en Fabric.
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fabric_futbol"
+# Subir la versión en cada wheel que se publique en el Environment.
+version = "0.1.0"
+description = "Clientes HTTP e ingesta Bronze de la plataforma analítica de fútbol"
+requires-python = ">=3.10"
+# requests ya viene en el runtime de Fabric; se declara para la instalación local.
+dependencies = ["requests>=2.28"]
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
