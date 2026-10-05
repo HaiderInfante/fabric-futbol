@@ -27,13 +27,23 @@ class CallBudget(Protocol):
     def consume(self, calls: int = 1) -> None: ...
 
 
-class InMemoryBudget:
-    """Tope de llamadas que vive solo durante la ejecución."""
+class SyncableBudget(CallBudget, Protocol):
+    """Presupuesto que puede alinearse con el uso que reporta el proveedor."""
 
-    def __init__(self, limit: int, name: str = "run") -> None:
+    def sync_used(self, used_by_provider: int) -> None: ...
+
+
+class InMemoryBudget:
+    """Presupuesto que vive solo durante la ejecución.
+
+    Sirve como tope por ejecución y, en Fabric, como presupuesto diario: el notebook lo
+    inicializa con el uso ya registrado en ctl_api_budget y lo persiste al terminar.
+    """
+
+    def __init__(self, limit: int, name: str = "run", used: int = 0) -> None:
         self.limit = limit
         self.name = name
-        self.used = 0
+        self.used = used
 
     def remaining(self) -> int:
         return max(self.limit - self.used, 0)
@@ -44,6 +54,10 @@ class InMemoryBudget:
                 f"Presupuesto '{self.name}' agotado: {self.used}/{self.limit} llamadas usadas"
             )
         self.used += calls
+
+    def sync_used(self, used_by_provider: int) -> None:
+        """Nunca retrocede: si el contador propio va por delante, se conserva."""
+        self.used = max(self.used, used_by_provider)
 
 
 def _utc_today() -> date:

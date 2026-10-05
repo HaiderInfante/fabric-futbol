@@ -99,7 +99,9 @@ def api_football_client(
         reserve=API_FOOTBALL_RESERVE,
     )
     run_cap = InMemoryBudget(limit=max_calls, name="ejecución")
-    client = ApiFootballClient(require_env("API_FOOTBALL_API_KEY"), budgets=[daily, run_cap])
+    client = ApiFootballClient(
+        require_env("API_FOOTBALL_API_KEY"), daily_budget=daily, budgets=[run_cap]
+    )
     return client, daily, run_cap
 
 

@@ -93,6 +93,33 @@ def test_api_football_sync_budget_uses_provider_count(tmp_path):
 
 
 @responses.activate
+def test_api_football_syncs_daily_budget_from_headers():
+    quota = {"x-ratelimit-requests-limit": "100", "x-ratelimit-requests-remaining": "60"}
+    responses.get(f"{AF_URL}/teams", json=af_payload([]), headers=quota)
+    daily = InMemoryBudget(limit=90, name="daily", used=5)
+    run_cap = InMemoryBudget(limit=10, name="run")
+    client = ApiFootballClient("key-af", daily_budget=daily, budgets=[run_cap], sleep=no_sleep)
+
+    client.teams(league=39, season=2024)
+
+    assert client.provider_used == 40
+    assert daily.used == 40  # el proveedor manda: 100 - 60
+    assert run_cap.used == 1  # el tope por ejecución no se sincroniza
+
+
+@responses.activate
+def test_api_football_header_sync_never_goes_backwards():
+    quota = {"x-ratelimit-requests-limit": "100", "x-ratelimit-requests-remaining": "99"}
+    responses.get(f"{AF_URL}/teams", json=af_payload([]), headers=quota)
+    daily = InMemoryBudget(limit=90, name="daily", used=30)
+    client = ApiFootballClient("key-af", daily_budget=daily, sleep=no_sleep)
+
+    client.teams(league=39, season=2024)
+
+    assert daily.used == 31  # 30 previas + esta llamada; el header (1) va por detrás
+
+
+@responses.activate
 def test_api_football_get_all_pages_follows_paging():
     responses.get(f"{AF_URL}/players", json=af_payload([1, 2], current=1, total=3))
     responses.get(f"{AF_URL}/players", json=af_payload([3], current=2, total=3))
