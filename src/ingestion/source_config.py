@@ -88,8 +88,8 @@ def _sb(config_id: str, entity: str, load_type: str, priority: int, description:
 # fmt: off
 SOURCE_CONFIGS: list[SourceConfig] = [
     # --- football-data.org (10/min, sin límite diario) ------------------------------------
-    _fd("fd_competitions", "competitions", "full", 10, "Catálogo de competiciones",
-        params={"competitions": ["PL", "PD", "EC"]}),
+    _fd("fd_competitions", "competitions", "full", 10,
+        "Catálogo de competiciones del plan (1 llamada; Bronze guarda las 13)"),
     _fd("fd_matches_current", "matches", "window", 20,
         "Partidos de la temporada en curso por ventana de fechas con margen hacia atrás",
         params={"targets": FD_CURRENT, "lookback_days": 7, "lookahead_days": 14},
