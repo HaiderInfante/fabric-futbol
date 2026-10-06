@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fabric_futbol"
 # Subir la versión en cada wheel que se publique en el Environment.
-version = "0.1.0"
+version = "0.2.0"
 description = "Clientes HTTP e ingesta Bronze de la plataforma analítica de fútbol"
 requires-python = ">=3.10"
 # requests ya viene en el runtime de Fabric; se declara para la instalación local.
