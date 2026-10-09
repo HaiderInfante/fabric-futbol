@@ -51,11 +51,18 @@ import json
 
 from pyspark.sql import functions as F
 
+from src.clients.api_football import ApiFootballClient
 from src.clients.budget import InMemoryBudget
 from src.clients.football_data import FootballDataClient
 from src.clients.statsbomb import StatsBombClient
 from src.ingestion import bronze_io
-from src.ingestion.control import RUN_STATUS_FAILED, RUN_STATUS_SKIPPED, RUN_STATUS_SUCCEEDED
+from src.ingestion.control import (
+    API_DAILY_BUDGETS,
+    RUN_STATUS_BUDGET_EXHAUSTED,
+    RUN_STATUS_FAILED,
+    RUN_STATUS_SKIPPED,
+    RUN_STATUS_SUCCEEDED,
+)
 from src.ingestion.handlers import ConfigRow
 from src.ingestion.raw_layout import new_batch_id
 from src.ingestion.runner import run_config
@@ -65,7 +72,9 @@ if config_row is None:
     raise ValueError(f"config_id desconocido: {config_id}. ¿Se ejecutó nb_bronze_setup?")
 config = ConfigRow.from_table_row(config_row.asDict())
 
-print(f"Entorno: {env} · fabric_futbol {importlib.metadata.version('fabric_futbol')}")
+# Versión del wheel que realmente se cargó: queda en ctl_run_log.code_version (ADR-008)
+code_version = importlib.metadata.version("fabric_futbol")
+print(f"Entorno: {env} · fabric_futbol {code_version}")
 print(f"{config.config_id}: {config.source}/{config.entity} ({config.load_type})")
 
 # METADATA ********************
@@ -81,14 +90,34 @@ print(f"{config.config_id}: {config.source}/{config.entity} ({config.load_type})
 # imprimen ni se pasan como parámetro.
 key_vault_url = notebookutils.variableLibrary.get("$(/**/vl_futbol/key_vault_url)")
 run_budgets = [InMemoryBudget(int(max_api_calls), name="ejecución")] if int(max_api_calls) else []
+daily_budget = None  # solo API-Football: presupuesto diario que se persiste en ctl_api_budget
 
 
 def build_client(source):
+    global daily_budget
     if source == "football_data":
         api_key = notebookutils.credentials.getSecret(key_vault_url, "football-data-api-key")
         return FootballDataClient(api_key, budgets=run_budgets)
     if source == "statsbomb":
         return StatsBombClient(budgets=run_budgets)  # datos públicos: sin key
+    if source == "api_football":
+        # Presupuesto diario (UTC) = límite - reserva, empezando por lo ya usado hoy según
+        # ctl_api_budget; luego se alinea con /status (gratis) y con los headers de cada
+        # respuesta. La cuota de la configuración (daily_quota) es un tope adicional.
+        limits = API_DAILY_BUDGETS["api_football"]
+        used_today = bronze_io.read_budget_used(spark, "api_football", started_at.date())
+        daily_budget = InMemoryBudget(
+            limits["daily_limit"] - limits["reserve"], name="api_football_diario", used=used_today
+        )
+        quota = config.params.get("daily_quota")
+        quota_budgets = [InMemoryBudget(int(quota), name=f"cuota {config_id}")] if quota else []
+        api_key = notebookutils.credentials.getSecret(key_vault_url, "api-football-api-key")
+        af_client = ApiFootballClient(
+            api_key, daily_budget=daily_budget, budgets=run_budgets + quota_budgets
+        )
+        af_client.sync_budget()
+        print(f"Presupuesto API-Football hoy: {daily_budget.used}/{daily_budget.limit} usadas")
+        return af_client
     raise NotImplementedError(f"Fuente sin cliente todavía: {source}")
 
 # METADATA ********************
@@ -113,6 +142,7 @@ log_entry = {
     "entity": config.entity,
     "load_type": config.load_type,
     "started_at": started_at,
+    "code_version": code_version,
 }
 
 try:
@@ -134,7 +164,7 @@ try:
                 spark, config_id, stats.watermark_after, stats.watermark_type, batch_id
             )
         log_entry.update(
-            status=RUN_STATUS_SUCCEEDED,
+            status=RUN_STATUS_BUDGET_EXHAUSTED if stats.stopped_by_budget else RUN_STATUS_SUCCEEDED,
             files_written=stats.files_written,
             records_read=stats.records_read,
             records_inserted=stats.records_inserted,
@@ -149,6 +179,17 @@ finally:
     log_entry["api_calls"] = client.calls_made if client is not None else 0
     log_entry["finished_at"] = bronze_io.utc_now()
     bronze_io.append_run_log(spark, log_entry)
+    if daily_budget is not None:
+        limits = API_DAILY_BUDGETS["api_football"]
+        bronze_io.write_budget(
+            spark,
+            "api_football",
+            started_at.date(),
+            daily_limit=limits["daily_limit"],
+            reserve=limits["reserve"],
+            calls_used=daily_budget.used,
+            provider_used=client.provider_used if client is not None else None,
+        )
     summary.update(
         {k: log_entry.get(k) for k in ("status", "api_calls", "files_written", "records_read")}
     )

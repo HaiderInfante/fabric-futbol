@@ -42,7 +42,8 @@ env = "dev"
 # 1) Comprueba que el wheel fabric_futbol del Environment env_futbol está instalado.
 import importlib.metadata
 
-from src.ingestion.control import CONTROL_TABLES_DDL
+from src.ingestion import bronze_io
+from src.ingestion.control import ADDED_COLUMNS, CONTROL_TABLES_DDL
 from src.ingestion.source_config import config_rows
 
 print(f"Entorno: {env}")
@@ -57,10 +58,15 @@ print(f"fabric_futbol {importlib.metadata.version('fabric_futbol')}")
 
 # CELL ********************
 
-# 2) Crea las tablas de control en el lakehouse por defecto (lh_bronze) si no existen.
+# 2) Crea las tablas de control en el lakehouse por defecto (lh_bronze) si no existen y
+#    añade las columnas nuevas a las que ya existían.
 for table_name, ddl in CONTROL_TABLES_DDL.items():
     spark.sql(ddl)
     print(f"OK {table_name}")
+
+# Evolución de esquema: columnas añadidas después de crear las tablas (ALTER TABLE ADD COLUMNS)
+for column in bronze_io.add_missing_columns(spark, ADDED_COLUMNS):
+    print(f"Columna añadida: {column}")
 
 # METADATA ********************
 
