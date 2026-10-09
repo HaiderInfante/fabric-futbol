@@ -79,8 +79,11 @@ RULES: dict[tuple[str, str], Rule] = {
     ("api_football", "injuries"): lambda p, _: [
         (f"{r['player']['id']}|{r['fixture']['id']}", r) for r in p["response"]
     ],
+    # Jugadores por equipo: un jugador traspasado aparece en dos equipos con estadísticas
+    # distintas, así que el equipo forma parte de la clave.
     ("api_football", "players"): lambda p, ctx: [
-        (f"{ctx['league']}|{ctx['season']}|{r['player']['id']}", r) for r in p["response"]
+        (f"{ctx['league']}|{ctx['season']}|{ctx['team']}|{r['player']['id']}", r)
+        for r in p["response"]
     ],
     # Por partido: un documento con los dos equipos (estadísticas o jugadores)
     ("api_football", "fixture_statistics"): lambda p, ctx: [

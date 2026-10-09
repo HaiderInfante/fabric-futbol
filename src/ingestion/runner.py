@@ -19,8 +19,10 @@ from src.ingestion.handlers import (
     ConfigRow,
     HandlerResult,
     fetch_fixture_backfill,
+    fetch_players_by_team,
     fetch_statsbomb_match_files,
     plan_fixture_backfill,
+    plan_players_by_team,
     plan_statsbomb_match_files,
     run_handler,
 )
@@ -57,6 +59,8 @@ class RunStats:
     watermark_after: str | None = None
     watermark_type: str | None = None
     stopped_by_budget: bool = False
+    # Error que detuvo el handler a mitad (lo descargado ya se guardó); el notebook lo clasifica
+    error: Exception | None = None
 
     def add(self, other: RunStats) -> None:
         self.files_written += other.files_written
@@ -139,6 +143,29 @@ def _run_fixture_backfill(
     )
     stats.watermark_type = "backfill_progress"
     stats.stopped_by_budget = result.stopped_by_budget
+    stats.error = result.error
+    return stats
+
+
+def _run_players_by_team(
+    writer: BronzeWriter,
+    client: Any,
+    config: ConfigRow,
+    watermark: str | None,
+    *,
+    batch_id: str,
+    today: date,
+) -> RunStats:
+    """Jugadores por equipo y temporada; los equipos salen de api_football_teams en Bronze."""
+    teams = writer.latest_records(bronze_table_name(config.source, "teams"))
+    progress = json.loads(watermark) if watermark else {}
+    pending = plan_players_by_team(config, teams, progress)
+    result = fetch_players_by_team(client, config, pending, progress)
+    stats = persist(writer, result, config, batch_id=batch_id, ingest_date=today)
+    stats.watermark_after = result.watermark_after
+    stats.watermark_type = result.watermark_type
+    stats.stopped_by_budget = result.stopped_by_budget
+    stats.error = result.error
     return stats
 
 
@@ -157,9 +184,14 @@ def run_config(
         )
     if config.load_type == "budgeted_backfill" and config.entity in FIXTURE_ENDPOINTS:
         return _run_fixture_backfill(writer, client, config, batch_id=batch_id, today=today)
+    if config.load_type == "budgeted_backfill" and config.entity == "players":
+        return _run_players_by_team(
+            writer, client, config, watermark, batch_id=batch_id, today=today
+        )
     result = run_handler(client, config, watermark, today)
     stats = persist(writer, result, config, batch_id=batch_id, ingest_date=today)
     stats.watermark_after = result.watermark_after
     stats.watermark_type = result.watermark_type
     stats.stopped_by_budget = result.stopped_by_budget
+    stats.error = result.error
     return stats

@@ -4,8 +4,10 @@ from datetime import date
 import responses
 
 from src.clients.api_football import DEFAULT_BASE_URL as AF_URL
-from src.clients.api_football import ApiFootballClient
+from src.clients.api_football import ApiFootballClient, ApiFootballError
+from src.clients.base_client import ApiError
 from src.clients.budget import InMemoryBudget
+from src.ingestion.errors import is_permanent_error
 from src.ingestion.handlers import ConfigRow, plan_fixture_backfill
 from src.ingestion.runner import run_config
 from src.ingestion.source_config import SOURCE_CONFIGS
@@ -77,36 +79,112 @@ def test_season_full_stops_at_quota_and_only_marks_fetched_targets():
     assert json.loads(stats.watermark_after) == ["league=39|season=2024", "league=4|season=2024"]
 
 
-# --- players por páginas ------------------------------------------------------------------------
+# --- players por equipo (tope de página del plan gratuito) -------------------------------------
 
 
-@responses.activate
-def test_players_pages_resume_where_previous_run_stopped():
-    for page in range(1, 4):
+def load_teams(writer, target, team_ids):
+    """Simula que af_teams ya cargó estos equipos en Bronze."""
+    writer.tables.setdefault("api_football_teams", []).extend(
+        {
+            "record_key": f"{target['league']}|{target['season']}|{tid}",
+            "record_hash": str(tid),
+            "record_context": json.dumps(target),
+            "payload": json.dumps({"team": {"id": tid}}),
+        }
+        for tid in team_ids
+    )
+
+
+def mock_team_pages(team, total_pages):
+    for page in range(1, total_pages + 1):
         responses.get(
             f"{AF_URL}/players",
-            json=af_payload([{"player": {"id": page}}], total=3, current=page),
+            json=af_payload(
+                [{"player": {"id": team * 100 + page}}], total=total_pages, current=page
+            ),
             match=[
                 responses.matchers.query_param_matcher(
-                    {"league": "4", "season": "2024", "page": str(page)}
+                    {"team": str(team), "season": "2024", "page": str(page)}
                 )
             ],
         )
-    writer = InMemoryWriter()
-    cfg = config("af_players", targets=[EURO])
 
-    first = run_config(writer, af_client(quota=2)[0], cfg, None, batch_id="B1", today=TODAY)
-    second = run_config(
-        writer, af_client(quota=2)[0], cfg, first.watermark_after, batch_id="B2", today=TODAY
+
+@responses.activate
+def test_players_by_team_caps_pages_and_marks_truncated():
+    writer = InMemoryWriter()
+    load_teams(writer, EURO, [1, 2])
+    mock_team_pages(1, total_pages=4)  # el plan gratuito no deja pedir la página 4
+    mock_team_pages(2, total_pages=2)
+
+    stats = run_config(
+        writer, af_client(quota=10)[0], config("af_players"), None, batch_id="B1", today=TODAY
     )
 
-    assert first.stopped_by_budget
-    assert json.loads(first.watermark_after) == {
-        "league=4|season=2024": {"next_page": 3, "total_pages": 3}
-    }
-    assert not second.stopped_by_budget
-    assert [c.request.params["page"] for c in responses.calls] == ["1", "2", "3"]
-    assert writer.existing_keys("api_football_players") == {"4|2024|1", "4|2024|2", "4|2024|3"}
+    progress = json.loads(stats.watermark_after)
+    assert progress["4|2024|1"] == {"next_page": 4, "total_pages": 4, "truncated": True}
+    assert progress["4|2024|2"] == {"next_page": 3, "total_pages": 2, "truncated": False}
+    assert len(responses.calls) == 5  # 3 + 2 páginas; nunca la 4
+    assert "4|2024|1|101" in writer.existing_keys("api_football_players")
+
+
+@responses.activate
+def test_players_by_team_resumes_after_budget_stop():
+    writer = InMemoryWriter()
+    load_teams(writer, EURO, [1, 2])
+    mock_team_pages(1, total_pages=2)
+    mock_team_pages(2, total_pages=2)
+    cfg = config("af_players")
+
+    first = run_config(writer, af_client(quota=3)[0], cfg, None, batch_id="B1", today=TODAY)
+    second = run_config(
+        writer, af_client(quota=3)[0], cfg, first.watermark_after, batch_id="B2", today=TODAY
+    )
+
+    assert first.stopped_by_budget and first.files_written == 3
+    assert not second.stopped_by_budget and second.files_written == 1  # solo la página que faltaba
+    assert len(responses.calls) == 4
+
+
+@responses.activate
+def test_error_mid_run_keeps_what_was_downloaded():
+    writer = InMemoryWriter()
+    load_teams(writer, EURO, [1])
+    mock_team_pages(1, total_pages=1)
+    load_teams(writer, PL, [33])
+    responses.get(
+        f"{AF_URL}/players",
+        json={"errors": {"plan": "Free plans are limited"}, "response": [], "paging": {}},
+    )
+
+    stats = run_config(
+        writer, af_client(quota=10)[0], config("af_players"), None, batch_id="B1", today=TODAY
+    )
+
+    assert stats.error is not None and is_permanent_error(stats.error)
+    assert stats.files_written == 1  # la página de la Euro se guardó antes del error
+    assert json.loads(stats.watermark_after)["4|2024|1"]["next_page"] == 2
+
+
+def test_error_classification():
+    assert is_permanent_error(ApiFootballError({"plan": "x"}))
+    assert is_permanent_error(ApiError("forbidden", status_code=403))
+    assert not is_permanent_error(ApiError("rate", status_code=429))
+    assert not is_permanent_error(ApiError("server", status_code=503))
+    assert not is_permanent_error(ApiError("red", status_code=None))
+
+
+@responses.activate
+def test_status_call_is_not_billable():
+    responses.get(f"{AF_URL}/status", json=af_payload({"requests": {"current": 0}}))
+    responses.get(f"{AF_URL}/teams", json=af_payload([]))
+    client, _ = af_client()
+
+    client.sync_budget()
+    client.teams(league=4, season=2024)
+
+    assert client.calls_made == 2
+    assert client.billable_calls == 1
 
 
 # --- relleno por partido ------------------------------------------------------------------------

@@ -88,7 +88,8 @@ class ApiClient:
         self.session = session or requests.Session()
         if headers:
             self.session.headers.update(headers)
-        self.calls_made = 0
+        self.calls_made = 0  # todas las peticiones HTTP
+        self.billable_calls = 0  # solo las que consumen presupuesto (p. ej. sin /status)
         # Última respuesta recibida: permite leer headers de cuota (p. ej. llamadas restantes).
         self.last_response: requests.Response | None = None
 
@@ -126,6 +127,7 @@ class ApiClient:
         for attempt in range(self.max_retries + 1):
             if consume_budget:
                 self._consume_budgets()
+                self.billable_calls += 1
             if self.rate_limiter:
                 self.rate_limiter.acquire()
 

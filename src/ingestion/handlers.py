@@ -14,6 +14,7 @@ from datetime import date
 from typing import Any
 
 from src.clients.api_football import ApiFootballClient
+from src.clients.base_client import ApiError
 from src.clients.budget import BudgetExceededError
 from src.clients.football_data import FootballDataClient
 from src.clients.statsbomb import StatsBombClient
@@ -43,6 +44,8 @@ class HandlerResult:
     manifest_updates: list[tuple[str, str]] = field(default_factory=list)
     # True si el handler paró al agotar el presupuesto (lo descargado se guarda igual)
     stopped_by_budget: bool = False
+    # Error que detuvo el handler a mitad; lo ya descargado se guarda antes de registrarlo
+    error: Exception | None = None
 
 
 @dataclass(frozen=True)
@@ -209,19 +212,35 @@ def fetch_statsbomb_match_files(client: StatsBombClient, matches: list[dict]) ->
 
 # --- API-Football (presupuesto diario + cuota por configuración) --------------------------------
 #
-# Todas las llamadas consumen presupuesto. Cuando el cliente lanza BudgetExceededError, el
-# handler para, marca `stopped_by_budget` y devuelve lo ya descargado: la siguiente ejecución
-# continúa donde se quedó (watermark o pendientes calculados desde Bronze).
+# Todas las llamadas consumen presupuesto. Los handlers paran en dos casos y devuelven lo ya
+# descargado, que el runner guarda igual:
+# - BudgetExceededError (cuota o presupuesto diario): `stopped_by_budget`; la siguiente
+#   ejecución continúa donde se quedó.
+# - ApiError (p. ej. un error de plan): `error`; el notebook decide si es permanente.
 
 FIXTURE_ENDPOINTS = {
     "fixture_statistics": "fixtures/statistics",
     "fixture_players": "fixtures/players",
 }
 FINISHED_STATUSES = frozenset({"FT", "AET", "PEN"})
+# El plan gratuito rechaza page > 3 ("Free plans are limited to a maximum value of 3 for the
+# Page parameter"). Configurable con params.max_page por si cambia el plan.
+DEFAULT_MAX_PAGE = 3
 
 
 def _af_target_params(target: dict) -> dict:
     return {"league": target["league"], "season": target["season"]}
+
+
+def _af_get(client: ApiFootballClient, result: HandlerResult, path: str, params: dict) -> Any:
+    """Llamada que, en vez de lanzar, anota en `result` por qué hay que parar (o None)."""
+    try:
+        return client.get_payload(path, params)
+    except BudgetExceededError:
+        result.stopped_by_budget = True
+    except ApiError as exc:
+        result.error = exc
+    return None
 
 
 def _af_season_full(
@@ -231,10 +250,8 @@ def _af_season_full(
     result = HandlerResult(watermark_type="completed_targets")
     done: list[dict] = []
     for target in pending_targets(config.params["targets"], completed):
-        try:
-            payload = client.get_payload(config.entity, _af_target_params(target))
-        except BudgetExceededError:
-            result.stopped_by_budget = True
+        payload = _af_get(client, result, config.entity, _af_target_params(target))
+        if payload is None:
             break
         name = f"{target['league']}_{target['season']}"
         result.raw_files.append(RawFile(config.entity, name, payload, dict(target)))
@@ -243,29 +260,69 @@ def _af_season_full(
     return result
 
 
-def _af_players_pages(
-    client: ApiFootballClient, config: ConfigRow, watermark: str | None, _today: date
+def _last_page(state: dict, max_page: int) -> int:
+    total = state.get("total_pages")
+    return max_page if total is None else min(max_page, total)
+
+
+def plan_players_by_team(
+    config: ConfigRow, team_records: list[dict], progress: dict[str, dict]
+) -> list[dict]:
+    """Equipos con páginas de /players?team&season pendientes (hasta `max_page`).
+
+    `team_records` son las últimas versiones de api_football_teams. `progress` es el watermark:
+    {"<liga>|<temporada>|<equipo>": {"next_page", "total_pages", "truncated"}}.
+    Orden: el de `targets` (Euro → PL → La Liga) y luego el id del equipo.
+    """
+    max_page = config.params.get("max_page", DEFAULT_MAX_PAGE)
+    order = {target_key(t): i for i, t in enumerate(config.params["targets"])}
+    pending = []
+    for record in team_records:
+        context = json.loads(record["record_context"])
+        position = order.get(target_key(_af_target_params(context)))
+        if position is None:
+            continue
+        team_id = json.loads(record["payload"])["team"]["id"]
+        team_key = f"{context['league']}|{context['season']}|{team_id}"
+        state = progress.get(team_key, {"next_page": 1, "total_pages": None})
+        if state["next_page"] > _last_page(state, max_page):
+            continue
+        pending.append(
+            {
+                "team_key": team_key,
+                "team": team_id,
+                "league": context["league"],
+                "season": context["season"],
+                "_position": position,
+            }
+        )
+    pending.sort(key=lambda p: (p["_position"], p["team"]))
+    return pending
+
+
+def fetch_players_by_team(
+    client: ApiFootballClient, config: ConfigRow, pending: list[dict], progress: dict[str, dict]
 ) -> HandlerResult:
-    """Recorre /players página a página. El watermark guarda, por objetivo, la siguiente
-    página y el total: {"league=4|season=2024": {"next_page": 3, "total_pages": 32}}."""
-    progress = json.loads(watermark) if watermark else {}
-    result = HandlerResult(watermark_type="page_progress")
-    for target in config.params["targets"]:
-        key = target_key(target)
-        state = progress.get(key, {"next_page": 1, "total_pages": None})
-        while state["total_pages"] is None or state["next_page"] <= state["total_pages"]:
+    """Descarga páginas por equipo hasta `max_page`. Si un equipo tiene más, queda marcado
+    `truncated` en el watermark: la pérdida de cobertura queda medida, no oculta."""
+    max_page = config.params.get("max_page", DEFAULT_MAX_PAGE)
+    result = HandlerResult(watermark_type="team_page_progress")
+    progress = dict(progress)
+    for item in pending:
+        state = progress.get(item["team_key"], {"next_page": 1, "total_pages": None})
+        while state["next_page"] <= _last_page(state, max_page):
             page = state["next_page"]
-            try:
-                payload = client.get_payload("players", {**_af_target_params(target), "page": page})
-            except BudgetExceededError:
-                result.stopped_by_budget = True
+            params = {"team": item["team"], "season": item["season"], "page": page}
+            payload = _af_get(client, result, "players", params)
+            if payload is None:
                 break
-            name = f"{target['league']}_{target['season']}_p{page}"
-            context = {**target, "page": page}
+            context = {k: item[k] for k in ("league", "season", "team")} | {"page": page}
+            name = f"{item['league']}_{item['season']}_{item['team']}_p{page}"
             result.raw_files.append(RawFile("players", name, payload, context))
-            state = {"next_page": page + 1, "total_pages": int(payload["paging"]["total"])}
-        progress[key] = state
-        if result.stopped_by_budget:
+            total = int(payload["paging"]["total"])
+            state = {"next_page": page + 1, "total_pages": total, "truncated": total > max_page}
+        progress[item["team_key"]] = state
+        if result.stopped_by_budget or result.error is not None:
             break
     result.watermark_after = json.dumps(progress, sort_keys=True)
     return result
@@ -308,10 +365,8 @@ def fetch_fixture_backfill(
     endpoint = FIXTURE_ENDPOINTS[config.entity]
     result = HandlerResult(watermark_type="backfill_progress")
     for item in pending:
-        try:
-            payload = client.get_payload(endpoint, {"fixture": item["fixture_id"]})
-        except BudgetExceededError:
-            result.stopped_by_budget = True
+        payload = _af_get(client, result, endpoint, {"fixture": item["fixture_id"]})
+        if payload is None:
             break
         context = {k: item[k] for k in ("fixture_id", "league", "season")}
         result.raw_files.append(RawFile(config.entity, str(item["fixture_id"]), payload, context))
@@ -330,20 +385,11 @@ HANDLERS: dict[tuple[str, str], Handler] = {
 }
 
 
-# Rellenos por páginas cuyo progreso vive en el watermark. El relleno por partido
-# (FIXTURE_ENDPOINTS) necesita el estado de Bronze y lo orquesta runner.py.
-PAGED_BACKFILL_HANDLERS: dict[tuple[str, str], Handler] = {
-    ("api_football", "players"): _af_players_pages,
-}
-
-
 def run_handler(
     client: Any, config: ConfigRow, watermark: str | None, today: date
 ) -> HandlerResult:
-    if config.load_type == "budgeted_backfill":
-        handler = PAGED_BACKFILL_HANDLERS.get((config.source, config.entity))
-    else:
-        handler = HANDLERS.get((config.source, config.load_type))
+    # Los rellenos (budgeted_backfill) necesitan el estado de Bronze y los orquesta runner.py
+    handler = HANDLERS.get((config.source, config.load_type))
     if handler is None:
         raise NotImplementedError(
             f"Sin handler para {config.source}/{config.load_type} ({config.config_id})"
