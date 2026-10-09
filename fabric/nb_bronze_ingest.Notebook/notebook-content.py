@@ -63,6 +63,7 @@ from src.ingestion.control import (
     RUN_STATUS_SKIPPED,
     RUN_STATUS_SUCCEEDED,
 )
+from src.ingestion.errors import is_permanent_error
 from src.ingestion.handlers import ConfigRow
 from src.ingestion.raw_layout import new_batch_id
 from src.ingestion.runner import run_config
@@ -172,11 +173,19 @@ try:
             watermark_after=stats.watermark_after,
         )
         summary["inserted_by_table"] = stats.inserted_by_table
+        if stats.error is not None:
+            # El handler paró por un error, pero lo descargado y el watermark ya se guardaron
+            raise stats.error
 except Exception as exc:
     log_entry.update(status=RUN_STATUS_FAILED, error_message=f"{type(exc).__name__}: {exc}"[:2000])
-    raise
+    # Permanente (error de plan, 4xx): reintentar repetiría el error y gastaría cuota. Se
+    # termina sin excepción y la pipeline lo marca con la actividad Fail (sin reintentos).
+    # Transitorio (red, 5xx): se relanza para que actúe el retry de la actividad Notebook.
+    if not is_permanent_error(exc):
+        raise
 finally:
-    log_entry["api_calls"] = client.calls_made if client is not None else 0
+    # Solo las llamadas que consumen cuota (/status es gratis)
+    log_entry["api_calls"] = client.billable_calls if client is not None else 0
     log_entry["finished_at"] = bronze_io.utc_now()
     bronze_io.append_run_log(spark, log_entry)
     if daily_budget is not None:
@@ -194,6 +203,7 @@ finally:
         {k: log_entry.get(k) for k in ("status", "api_calls", "files_written", "records_read")}
     )
     summary["records_inserted"] = log_entry.get("records_inserted")
+    summary["error_message"] = log_entry.get("error_message")
     print(json.dumps(summary, indent=2, default=str))
 
 # METADATA ********************
@@ -205,7 +215,8 @@ finally:
 
 # CELL ********************
 
-# Valor de salida para la pipeline (activity('…').output.result.exitValue).
+# Valor de salida para la pipeline (activity('…').output.result.exitValue). Si status es
+# "failed" (error permanente), la pipeline lo convierte en fallo con la actividad Fail.
 notebookutils.notebook.exit(json.dumps(summary, default=str))
 
 # METADATA ********************
