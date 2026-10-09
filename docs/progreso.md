@@ -153,3 +153,25 @@ Decisiones: ADR-007 a ADR-010.
 - HTTP 430 `TooManyRequestsForCapacity` con una sesión interactiva abierta → cerrar las sesiones
   antes de lanzar la pipeline. Se añadió `retry` = 2 a la actividad Notebook (ADR-010).
 - Los roles de Azure aparecen traducidos en el portal en español (ADR-009).
+
+### Hallazgos de la subetapa 2.4 (primera prueba, 2026-10-09, `max_api_calls = 5`)
+
+- **El plan gratuito de API-Football rechaza `page > 3`** ("Free plans are limited to a maximum
+  value of 3 for the Page parameter"). `/players?league&season` tiene 57 páginas en PL, así que
+  ese diseño no sirve. Nuevo diseño: `/players?team&season`, páginas 1 a 3 por equipo (equipos
+  tomados de `api_football_teams`). Si un equipo tiene más páginas queda marcado `truncated`;
+  el Manchester United tiene 4, y la cuarta serían sobre todo juveniles. `/players/squads`
+  descartado: devuelve la plantilla actual y sin fecha de nacimiento. Coste estimado: unas 168
+  llamadas.
+- Los **reintentos de la pipeline repetían un error permanente** (3 intentos × 5 llamadas) y
+  **no se guardaban las páginas ya descargadas**. Ahora el handler guarda lo descargado antes de
+  registrar el error. El notebook clasifica el error (`src/ingestion/errors.py`): si es
+  permanente termina sin excepción con `status = failed`, y la actividad Fail de la pipeline lo
+  marca como fallido sin reintentar.
+- **`api_calls` incluía la llamada gratuita a `/status`** (4 llamadas con 3 archivos). Ahora
+  cuenta solo las llamadas que consumen cuota (`billable_calls`).
+- **Contadores:** las llamadas que consumen cuota fueron 21. El proveedor no cobra los 3
+  errores de plan, así que registró 18, que es lo que marcaba `/status` después. `calls_used`
+  (22) es conservador: toma el máximo entre nuestro contador y el del proveedor.
+- `af_fixture_statistics` y `af_fixture_players` corrieron antes que `af_fixtures` y no tenían
+  pendientes. Es lo esperado según el diseño independiente del orden (ADR-010).
