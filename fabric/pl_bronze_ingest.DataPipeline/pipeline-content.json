@@ -113,6 +113,39 @@
               },
               "name": "nb_ingest",
               "dependsOn": []
+            },
+            {
+              "type": "IfCondition",
+              "typeProperties": {
+                "expression": {
+                  "value": "@equals(json(activity('nb_ingest').output.result.exitValue).status, 'failed')",
+                  "type": "Expression"
+                },
+                "ifTrueActivities": [
+                  {
+                    "type": "Fail",
+                    "typeProperties": {
+                      "message": {
+                        "value": "@concat('Falló ', item().config_id, ': ', json(activity('nb_ingest').output.result.exitValue).error_message)",
+                        "type": "Expression"
+                      },
+                      "errorCode": "INGEST_PERMANENT_ERROR"
+                    },
+                    "name": "fail_config",
+                    "dependsOn": []
+                  }
+                ],
+                "ifFalseActivities": []
+              },
+              "name": "if_failed",
+              "dependsOn": [
+                {
+                  "activity": "nb_ingest",
+                  "dependencyConditions": [
+                    "Succeeded"
+                  ]
+                }
+              ]
             }
           ]
         },
