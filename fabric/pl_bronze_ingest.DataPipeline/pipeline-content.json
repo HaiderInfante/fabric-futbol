@@ -1,0 +1,141 @@
+{
+  "properties": {
+    "activities": [
+      {
+        "type": "Lookup",
+        "typeProperties": {
+          "source": {
+            "type": "LakehouseTableSource"
+          },
+          "datasetSettings": {
+            "type": "LakehouseTable",
+            "typeProperties": {
+              "table": "ctl_source_config"
+            },
+            "schema": [],
+            "linkedService": {
+              "name": "lh_bronze",
+              "properties": {
+                "type": "Lakehouse",
+                "typeProperties": {
+                  "artifactId": "345b6a05-92d7-a043-4e6d-c8c542cf2182",
+                  "workspaceId": "00000000-0000-0000-0000-000000000000",
+                  "rootFolder": "Tables"
+                },
+                "annotations": []
+              }
+            },
+            "annotations": []
+          },
+          "firstRowOnly": false
+        },
+        "policy": {
+          "timeout": "0.12:00:00",
+          "retry": 0,
+          "retryIntervalInSeconds": 30,
+          "secureInput": false,
+          "secureOutput": false
+        },
+        "name": "lkp_active_configs",
+        "dependsOn": []
+      },
+      {
+        "type": "Filter",
+        "typeProperties": {
+          "items": {
+            "value": "@activity('lkp_active_configs').output.value",
+            "type": "Expression"
+          },
+          "condition": {
+            "value": "@and(equals(item().is_active, true), or(equals(pipeline().parameters.source_filter, '%'), equals(item().source, pipeline().parameters.source_filter)))",
+            "type": "Expression"
+          }
+        },
+        "name": "flt_configs",
+        "dependsOn": [
+          {
+            "activity": "lkp_active_configs",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ]
+      },
+      {
+        "type": "ForEach",
+        "typeProperties": {
+          "isSequential": true,
+          "items": {
+            "value": "@activity('flt_configs').output.value",
+            "type": "Expression"
+          },
+          "activities": [
+            {
+              "type": "TridentNotebook",
+              "typeProperties": {
+                "notebookId": "d98c7644-a498-8317-48d4-d4ba6abd5469",
+                "workspaceId": "00000000-0000-0000-0000-000000000000",
+                "parameters": {
+                  "env": {
+                    "value": "dev",
+                    "type": "string"
+                  },
+                  "config_id": {
+                    "value": {
+                      "value": "@item().config_id",
+                      "type": "Expression"
+                    },
+                    "type": "string"
+                  },
+                  "pipeline_run_id": {
+                    "value": {
+                      "value": "@pipeline().RunId",
+                      "type": "Expression"
+                    },
+                    "type": "string"
+                  },
+                  "max_api_calls": {
+                    "value": {
+                      "value": "@pipeline().parameters.max_api_calls",
+                      "type": "Expression"
+                    },
+                    "type": "int"
+                  }
+                },
+                "sessionTag": "bronze_ingest"
+              },
+              "policy": {
+                "timeout": "0.12:00:00",
+                "retry": 0,
+                "retryIntervalInSeconds": 30,
+                "secureInput": false,
+                "secureOutput": false
+              },
+              "name": "nb_ingest",
+              "dependsOn": []
+            }
+          ]
+        },
+        "name": "fe_configs",
+        "dependsOn": [
+          {
+            "activity": "flt_configs",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ]
+      }
+    ],
+    "parameters": {
+      "max_api_calls": {
+        "type": "int",
+        "defaultValue": 0
+      },
+      "source_filter": {
+        "type": "string",
+        "defaultValue": "football_data"
+      }
+    }
+  }
+}
