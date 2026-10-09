@@ -54,7 +54,8 @@ CONTROL_TABLES_DDL: dict[str, str] = {
             records_inserted BIGINT,
             watermark_before STRING,
             watermark_after STRING,
-            error_message STRING
+            error_message STRING,
+            code_version STRING
         ) USING DELTA
     """,
     "ctl_api_budget": """
@@ -79,8 +80,20 @@ CONTROL_TABLES_DDL: dict[str, str] = {
     """,
 }
 
+# Columnas añadidas después de crear las tablas (evolución de esquema). `CREATE TABLE IF NOT
+# EXISTS` no las añade a una tabla existente: nb_bronze_setup ejecuta ALTER TABLE si faltan.
+ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "ctl_run_log": {"code_version": "STRING"},  # versión del wheel que ejecutó (ADR-008)
+}
+
 # Estados válidos de ctl_run_log.status
 RUN_STATUS_RUNNING = "running"
 RUN_STATUS_SUCCEEDED = "succeeded"
 RUN_STATUS_FAILED = "failed"
-RUN_STATUS_SKIPPED = "skipped"  # p. ej. presupuesto agotado antes de empezar
+RUN_STATUS_SKIPPED = "skipped"  # configuración inactiva
+RUN_STATUS_BUDGET_EXHAUSTED = "budget_exhausted"  # terminó al agotar su cuota; guardó lo hecho
+
+# Presupuesto diario por fuente (llamadas/día y reserva que ninguna ejecución toca)
+API_DAILY_BUDGETS: dict[str, dict[str, int]] = {
+    "api_football": {"daily_limit": 100, "reserve": 10},
+}

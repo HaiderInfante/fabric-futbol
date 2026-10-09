@@ -68,6 +68,25 @@ RULES: dict[tuple[str, str], Rule] = {
     ],
     ("football_data", "standings"): _season_doc_key,
     ("football_data", "scorers"): _season_doc_key,
+    # API-Football: el sobre (get/parameters/errors/paging) queda en el archivo crudo; los
+    # registros son los elementos de `response`.
+    ("api_football", "fixtures"): lambda p, _: [
+        (str(r["fixture"]["id"]), r) for r in p["response"]
+    ],
+    ("api_football", "teams"): lambda p, ctx: [
+        (f"{ctx['league']}|{ctx['season']}|{r['team']['id']}", r) for r in p["response"]
+    ],
+    ("api_football", "injuries"): lambda p, _: [
+        (f"{r['player']['id']}|{r['fixture']['id']}", r) for r in p["response"]
+    ],
+    ("api_football", "players"): lambda p, ctx: [
+        (f"{ctx['league']}|{ctx['season']}|{r['player']['id']}", r) for r in p["response"]
+    ],
+    # Por partido: un documento con los dos equipos (estadísticas o jugadores)
+    ("api_football", "fixture_statistics"): lambda p, ctx: [
+        (str(ctx["fixture_id"]), p["response"])
+    ],
+    ("api_football", "fixture_players"): lambda p, ctx: [(str(ctx["fixture_id"]), p["response"])],
     ("statsbomb", "competitions"): lambda p, _: [
         (f"{c['competition_id']}|{c['season_id']}", c) for c in p
     ],

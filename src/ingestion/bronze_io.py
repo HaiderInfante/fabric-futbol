@@ -113,7 +113,7 @@ RUN_LOG_SCHEMA = (
     "entity string, load_type string, started_at timestamp, finished_at timestamp, "
     "status string, api_calls int, files_written int, records_read bigint, "
     "records_inserted bigint, watermark_before string, watermark_after string, "
-    "error_message string"
+    "error_message string, code_version string"
 )
 
 
@@ -156,6 +156,80 @@ def write_manifest(
     """)
 
 
+def latest_records(spark: SparkSession, table: str) -> list[dict]:
+    """Última versión de cada clave (para planificar rellenos desde lo ya cargado)."""
+    if not spark.catalog.tableExists(table):
+        return []
+    rows = (
+        spark.table(table)
+        .groupBy("record_key")
+        .agg(
+            F.max_by("record_context", "_ingested_at").alias("record_context"),
+            F.max_by("payload", "_ingested_at").alias("payload"),
+        )
+        .collect()
+    )
+    return [r.asDict() for r in rows]
+
+
+def existing_keys(spark: SparkSession, table: str) -> set[str]:
+    if not spark.catalog.tableExists(table):
+        return set()
+    return {r["record_key"] for r in spark.table(table).select("record_key").distinct().collect()}
+
+
+def add_missing_columns(spark: SparkSession, added_columns: dict[str, dict[str, str]]) -> list[str]:
+    """Evolución de esquema: añade a tablas existentes las columnas que aún no tienen."""
+    applied = []
+    for table, columns in added_columns.items():
+        current = {f.name for f in spark.table(table).schema.fields}
+        for name, sql_type in columns.items():
+            if name not in current:
+                spark.sql(f"ALTER TABLE {table} ADD COLUMNS ({name} {sql_type})")
+                applied.append(f"{table}.{name}")
+    return applied
+
+
+def read_budget_used(spark: SparkSession, source: str, budget_date: date) -> int:
+    row = (
+        spark.table("ctl_api_budget")
+        .where((F.col("source") == source) & (F.col("budget_date") == F.lit(budget_date)))
+        .select("calls_used")
+        .first()
+    )
+    return int(row["calls_used"]) if row and row["calls_used"] is not None else 0
+
+
+def write_budget(
+    spark: SparkSession,
+    source: str,
+    budget_date: date,
+    *,
+    daily_limit: int,
+    reserve: int,
+    calls_used: int,
+    provider_used: int | None,
+) -> None:
+    """Guarda el uso del día; nunca lo reduce (greatest) aunque otra ejecución vaya detrás."""
+    spark.createDataFrame(
+        [(source, budget_date, daily_limit, reserve, calls_used, provider_used)],
+        "source string, budget_date date, daily_limit int, reserve int, calls_used int, "
+        "provider_used int",
+    ).createOrReplaceTempView("budget_new")
+    spark.sql("""
+        MERGE INTO ctl_api_budget AS t
+        USING budget_new AS s ON t.source = s.source AND t.budget_date = s.budget_date
+        WHEN MATCHED THEN UPDATE SET
+            calls_used = greatest(t.calls_used, s.calls_used),
+            provider_used = coalesce(s.provider_used, t.provider_used),
+            daily_limit = s.daily_limit, reserve = s.reserve, updated_at = current_timestamp()
+        WHEN NOT MATCHED THEN INSERT
+            (source, budget_date, daily_limit, reserve, calls_used, provider_used, updated_at)
+            VALUES (s.source, s.budget_date, s.daily_limit, s.reserve, s.calls_used,
+                    s.provider_used, current_timestamp())
+    """)
+
+
 class SparkBronzeWriter:
     """Implementación de `runner.BronzeWriter` sobre lh_bronze."""
 
@@ -173,6 +247,12 @@ class SparkBronzeWriter:
 
     def write_manifest(self, source: str, updates: list[tuple[str, str]], batch_id: str) -> None:
         write_manifest(self.spark, source, updates, batch_id)
+
+    def latest_records(self, table: str) -> list[dict]:
+        return latest_records(self.spark, table)
+
+    def existing_keys(self, table: str) -> set[str]:
+        return existing_keys(self.spark, table)
 
 
 def utc_now() -> datetime:

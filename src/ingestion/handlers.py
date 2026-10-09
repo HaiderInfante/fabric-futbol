@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from src.clients.api_football import ApiFootballClient
+from src.clients.budget import BudgetExceededError
 from src.clients.football_data import FootballDataClient
 from src.clients.statsbomb import StatsBombClient
 from src.ingestion.planning import (
@@ -20,6 +22,7 @@ from src.ingestion.planning import (
     mark_completed,
     parse_completed,
     pending_targets,
+    target_key,
 )
 
 
@@ -38,6 +41,8 @@ class HandlerResult:
     watermark_type: str | None = None
     # Carga por archivos: (file_key, versión) procesados, para ctl_file_manifest
     manifest_updates: list[tuple[str, str]] = field(default_factory=list)
+    # True si el handler paró al agotar el presupuesto (lo descargado se guarda igual)
+    stopped_by_budget: bool = False
 
 
 @dataclass(frozen=True)
@@ -202,9 +207,121 @@ def fetch_statsbomb_match_files(client: StatsBombClient, matches: list[dict]) ->
     return result
 
 
+# --- API-Football (presupuesto diario + cuota por configuración) --------------------------------
+#
+# Todas las llamadas consumen presupuesto. Cuando el cliente lanza BudgetExceededError, el
+# handler para, marca `stopped_by_budget` y devuelve lo ya descargado: la siguiente ejecución
+# continúa donde se quedó (watermark o pendientes calculados desde Bronze).
+
+FIXTURE_ENDPOINTS = {
+    "fixture_statistics": "fixtures/statistics",
+    "fixture_players": "fixtures/players",
+}
+FINISHED_STATUSES = frozenset({"FT", "AET", "PEN"})
+
+
+def _af_target_params(target: dict) -> dict:
+    return {"league": target["league"], "season": target["season"]}
+
+
+def _af_season_full(
+    client: ApiFootballClient, config: ConfigRow, watermark: str | None, _today: date
+) -> HandlerResult:
+    completed = parse_completed(watermark)
+    result = HandlerResult(watermark_type="completed_targets")
+    done: list[dict] = []
+    for target in pending_targets(config.params["targets"], completed):
+        try:
+            payload = client.get_payload(config.entity, _af_target_params(target))
+        except BudgetExceededError:
+            result.stopped_by_budget = True
+            break
+        name = f"{target['league']}_{target['season']}"
+        result.raw_files.append(RawFile(config.entity, name, payload, dict(target)))
+        done.append(target)
+    result.watermark_after = mark_completed(completed, done)
+    return result
+
+
+def _af_players_pages(
+    client: ApiFootballClient, config: ConfigRow, watermark: str | None, _today: date
+) -> HandlerResult:
+    """Recorre /players página a página. El watermark guarda, por objetivo, la siguiente
+    página y el total: {"league=4|season=2024": {"next_page": 3, "total_pages": 32}}."""
+    progress = json.loads(watermark) if watermark else {}
+    result = HandlerResult(watermark_type="page_progress")
+    for target in config.params["targets"]:
+        key = target_key(target)
+        state = progress.get(key, {"next_page": 1, "total_pages": None})
+        while state["total_pages"] is None or state["next_page"] <= state["total_pages"]:
+            page = state["next_page"]
+            try:
+                payload = client.get_payload("players", {**_af_target_params(target), "page": page})
+            except BudgetExceededError:
+                result.stopped_by_budget = True
+                break
+            name = f"{target['league']}_{target['season']}_p{page}"
+            context = {**target, "page": page}
+            result.raw_files.append(RawFile("players", name, payload, context))
+            state = {"next_page": page + 1, "total_pages": int(payload["paging"]["total"])}
+        progress[key] = state
+        if result.stopped_by_budget:
+            break
+    result.watermark_after = json.dumps(progress, sort_keys=True)
+    return result
+
+
+def plan_fixture_backfill(
+    config: ConfigRow, fixture_records: list[dict], done_keys: set[str]
+) -> list[dict]:
+    """Partidos terminados de los objetivos que aún no tienen esta entidad en Bronze.
+
+    `fixture_records` son las últimas versiones de api_football_fixtures (record_key,
+    record_context, payload). Orden: el de `targets` (Euro → PL → La Liga) y luego la fecha.
+    """
+    order = {target_key(t): i for i, t in enumerate(config.params["targets"])}
+    pending = []
+    for record in fixture_records:
+        context = json.loads(record["record_context"])
+        position = order.get(target_key(_af_target_params(context)))
+        if position is None or record["record_key"] in done_keys:
+            continue
+        fixture = json.loads(record["payload"])["fixture"]
+        if fixture["status"]["short"] not in FINISHED_STATUSES:
+            continue
+        pending.append(
+            {
+                "fixture_id": int(record["record_key"]),
+                "league": context["league"],
+                "season": context["season"],
+                "date": fixture["date"],
+                "_position": position,
+            }
+        )
+    pending.sort(key=lambda p: (p["_position"], p["date"]))
+    return pending
+
+
+def fetch_fixture_backfill(
+    client: ApiFootballClient, config: ConfigRow, pending: list[dict]
+) -> HandlerResult:
+    endpoint = FIXTURE_ENDPOINTS[config.entity]
+    result = HandlerResult(watermark_type="backfill_progress")
+    for item in pending:
+        try:
+            payload = client.get_payload(endpoint, {"fixture": item["fixture_id"]})
+        except BudgetExceededError:
+            result.stopped_by_budget = True
+            break
+        context = {k: item[k] for k in ("fixture_id", "league", "season")}
+        result.raw_files.append(RawFile(config.entity, str(item["fixture_id"]), payload, context))
+    return result
+
+
 Handler = Callable[[Any, ConfigRow, str | None, date], HandlerResult]
 
 HANDLERS: dict[tuple[str, str], Handler] = {
+    ("api_football", "season_full"): _af_season_full,
     ("football_data", "full"): _fd_full,
     ("football_data", "window"): _fd_window,
     ("football_data", "season_full"): _fd_season_full,
@@ -213,13 +330,22 @@ HANDLERS: dict[tuple[str, str], Handler] = {
 }
 
 
+# Rellenos por páginas cuyo progreso vive en el watermark. El relleno por partido
+# (FIXTURE_ENDPOINTS) necesita el estado de Bronze y lo orquesta runner.py.
+PAGED_BACKFILL_HANDLERS: dict[tuple[str, str], Handler] = {
+    ("api_football", "players"): _af_players_pages,
+}
+
+
 def run_handler(
     client: Any, config: ConfigRow, watermark: str | None, today: date
 ) -> HandlerResult:
-    try:
-        handler = HANDLERS[(config.source, config.load_type)]
-    except KeyError as exc:
+    if config.load_type == "budgeted_backfill":
+        handler = PAGED_BACKFILL_HANDLERS.get((config.source, config.entity))
+    else:
+        handler = HANDLERS.get((config.source, config.load_type))
+    if handler is None:
         raise NotImplementedError(
             f"Sin handler para {config.source}/{config.load_type} ({config.config_id})"
-        ) from exc
+        )
     return handler(client, config, watermark, today)

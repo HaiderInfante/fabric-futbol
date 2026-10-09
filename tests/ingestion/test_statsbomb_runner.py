@@ -8,36 +8,9 @@ from src.ingestion.handlers import ConfigRow, match_version
 from src.ingestion.records import extract_records
 from src.ingestion.runner import run_config
 from src.ingestion.source_config import SOURCE_CONFIGS
+from tests.ingestion.fakes import InMemoryWriter
 
 TODAY = date(2026, 10, 8)
-
-
-class InMemoryWriter:
-    """Writer de pruebas con la misma semántica que bronze_io: solo añade versiones nuevas."""
-
-    def __init__(self):
-        self.files = []
-        self.tables: dict[str, list[dict]] = {}
-        self.manifest: dict[str, str] = {}
-        self.manifest_writes = 0
-
-    def write_files(self, files):
-        self.files.extend(files)
-        return len(files)
-
-    def append(self, table, rows):
-        existing = self.tables.setdefault(table, [])
-        latest = {r["record_key"]: r["record_hash"] for r in existing}
-        new = [r for r in rows if latest.get(r["record_key"]) != r["record_hash"]]
-        existing.extend(new)
-        return len(new)
-
-    def read_manifest(self, source):
-        return dict(self.manifest)
-
-    def write_manifest(self, source, updates, batch_id):
-        self.manifest_writes += 1
-        self.manifest.update(dict(updates))
 
 
 def config(config_id, **param_overrides):

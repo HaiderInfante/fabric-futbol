@@ -7,6 +7,7 @@ carga por archivos) se prueba en local.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import date
@@ -14,12 +15,16 @@ from typing import Any, Protocol
 
 from src.ingestion.batch import build_batch
 from src.ingestion.handlers import (
+    FIXTURE_ENDPOINTS,
     ConfigRow,
     HandlerResult,
+    fetch_fixture_backfill,
     fetch_statsbomb_match_files,
+    plan_fixture_backfill,
     plan_statsbomb_match_files,
     run_handler,
 )
+from src.ingestion.raw_layout import bronze_table_name
 
 DEFAULT_CHUNK_SIZE = 10
 
@@ -35,6 +40,13 @@ class BronzeWriter(Protocol):
         self, source: str, updates: list[tuple[str, str]], batch_id: str
     ) -> None: ...
 
+    def latest_records(self, table: str) -> list[dict]:
+        """Última versión de cada clave: dicts con record_key, record_context y payload.
+        Lista vacía si la tabla no existe todavía."""
+        ...
+
+    def existing_keys(self, table: str) -> set[str]: ...
+
 
 @dataclass
 class RunStats:
@@ -44,6 +56,7 @@ class RunStats:
     inserted_by_table: dict[str, int] = field(default_factory=dict)
     watermark_after: str | None = None
     watermark_type: str | None = None
+    stopped_by_budget: bool = False
 
     def add(self, other: RunStats) -> None:
         self.files_written += other.files_written
@@ -106,6 +119,29 @@ def _run_file_incremental(
     return total
 
 
+def _run_fixture_backfill(
+    writer: BronzeWriter,
+    client: Any,
+    config: ConfigRow,
+    *,
+    batch_id: str,
+    today: date,
+) -> RunStats:
+    """Relleno por partido: pendientes = partidos terminados en Bronze sin esta entidad."""
+    fixtures = writer.latest_records(bronze_table_name(config.source, "fixtures"))
+    done = writer.existing_keys(bronze_table_name(config.source, config.entity))
+    pending = plan_fixture_backfill(config, fixtures, done)
+    result = fetch_fixture_backfill(client, config, pending)
+    stats = persist(writer, result, config, batch_id=batch_id, ingest_date=today)
+    fetched = len(result.raw_files)
+    stats.watermark_after = json.dumps(
+        {"done": len(done) + fetched, "pending": len(pending) - fetched}
+    )
+    stats.watermark_type = "backfill_progress"
+    stats.stopped_by_budget = result.stopped_by_budget
+    return stats
+
+
 def run_config(
     writer: BronzeWriter,
     client: Any,
@@ -119,8 +155,11 @@ def run_config(
         return _run_file_incremental(
             writer, client, config, watermark, batch_id=batch_id, today=today
         )
+    if config.load_type == "budgeted_backfill" and config.entity in FIXTURE_ENDPOINTS:
+        return _run_fixture_backfill(writer, client, config, batch_id=batch_id, today=today)
     result = run_handler(client, config, watermark, today)
     stats = persist(writer, result, config, batch_id=batch_id, ingest_date=today)
     stats.watermark_after = result.watermark_after
     stats.watermark_type = result.watermark_type
+    stats.stopped_by_budget = result.stopped_by_budget
     return stats
