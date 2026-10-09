@@ -7,7 +7,7 @@ Estado por fase. Una fase se marca como terminada solo cuando se confirma su cri
 |---|---|---|
 | 0 | Setup | ✅ Terminada (2026-09-28) |
 | 1 | Exploración de fuentes | ✅ Terminada (2026-09-29) |
-| 2 | Bronze | ⚪ Pendiente |
+| 2 | Bronze | 🟡 En curso (2.1 y 2.2 ✅) |
 | 3 | Silver | ⚪ Pendiente |
 | 4 | Gold | ⚪ Pendiente |
 | 5 | Consumo | ⚪ Pendiente |
@@ -110,3 +110,46 @@ temporadas usar. Confirmado el 2026-09-29.
 - Fase 2: sincronizar `ctl_api_budget` con el header `x-ratelimit-requests-remaining`.
 - ~~Revisar en el portal cuándo vence la capacidad Trial~~ Revisado el 2026-09-29: cubre los ~20
   días de relleno de API-Football.
+
+---
+
+## Fase 2 — Bronze 🟡
+
+**Criterio de terminado:** dos ejecuciones seguidas; la segunda solo trae datos nuevos (evidencia
+en `ctl_run_log`).
+
+Se trabaja en `ws_futbol_feat_bronze`, conectado a `feature/fase-2-bronze` (ver ADR-004).
+Decisiones: ADR-007 a ADR-010.
+
+| Subetapa | Contenido | Estado |
+|---|---|---|
+| 2.1 | Key Vault, `env_futbol`, `vl_futbol`, `lh_bronze`, tablas `ctl_*`, `nb_bronze_setup` | ✅ 2026-10-05 |
+| 2.2 | football-data (`full`, `window`, `season_full`, `snapshot`) y `pl_bronze_ingest` | ✅ 2026-10-08 |
+| 2.3 | StatsBomb (`file_incremental` con `ctl_file_manifest`) | ⚪ |
+| 2.4 | API-Football (`budgeted_backfill` con cuota por configuración) | ⚪ |
+| 2.5 | Copy job (HTTP completo e incremental desde tabla), documentación y cierre | ⚪ |
+
+### Evidencia de la subetapa 2.2 (`ctl_run_log`, UTC)
+
+| Configuración | Ejecución 1 (llamadas / leídos / insertados) | Ejecución 2 (llamadas / leídos / insertados) |
+|---|---|---|
+| `fd_matches_current` | 4 / 158 / 158 | 4 / 43 / 2 |
+| `fd_matches_history` | 3 / 811 / 811 | **0 / 0 / 0** |
+| `fd_teams` | 5 / 104 / 104 | 2 / 40 / 0 |
+| `fd_standings` | 2 / 2 / 2 | 2 / 2 / 0 |
+| `fd_scorers` | 2 / 2 / 2 | 2 / 2 / 0 |
+| `fd_competitions` | 1 / 13 / 0 (ya cargadas en la prueba manual) | 1 / 13 / 0 |
+
+- La primera ejecución de la pipeline duró 8 min 08 s, con 6 iteraciones.
+- Los 2 registros insertados en `fd_matches_current` en la segunda ejecución están pendientes de
+  revisar: pueden ser cambios reales o un campo volátil no detectado.
+
+### Hallazgos
+
+- *Branch out* se bloquea si la rama de origen no tiene ítems (ADR-004).
+- El wheel en modo Quick no viaja por Git y en modo Full sí (ADR-008).
+- El Lookup en modo *Table* no ordena, y *T-SQL Query* está deshabilitado → diseño
+  independiente del orden (ADR-010).
+- HTTP 430 `TooManyRequestsForCapacity` con una sesión interactiva abierta → cerrar las sesiones
+  antes de lanzar la pipeline. Se añadió `retry` = 2 a la actividad Notebook (ADR-010).
+- Los roles de Azure aparecen traducidos en el portal en español (ADR-009).

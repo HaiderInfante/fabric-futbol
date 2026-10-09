@@ -63,6 +63,11 @@ Formato breve: contexto → decisión → alternativas descartadas → consecuen
   `fabric/Readme.md`). Por eso el ruleset `protect-main` se activó **después** de conectar. Si hay
   que reconectar un workspace a una carpeta nueva con `main` ya protegida, conviene crear antes la
   carpeta mediante un PR.
+- **Evidencia (2026-10-05):** *Branch out* falló porque la rama de origen (`main/fabric`) no tenía
+  ningún ítem. Alternativa aplicada: crear `ws_futbol_feat_bronze` a mano y conectarlo a una rama
+  nueva `feature/fase-2-bronze` creada desde `main`. El efecto es el mismo, salvo que no queda
+  registrada la relación entre el workspace de feature y DEV. Cuando DEV tenga ítems, *Branch
+  out* debería funcionar.
 
 ## ADR-005 — Competiciones y temporadas
 
@@ -129,3 +134,101 @@ Formato breve: contexto → decisión → alternativas descartadas → consecuen
     conviene sincronizar el presupuesto con él después de cada llamada.
   - Falta decidir cómo llega `src/` a los notebooks de Fabric: wheel en un Environment, notebook
     utilitario con `%run` o código embebido.
+
+## ADR-007 — Formato de Bronze e idempotencia
+
+- **Fecha:** 2026-10-08
+- **Contexto:** Bronze debe guardar el dato crudo, permitir reejecutar sin duplicar y conservar
+  el historial de cambios (partidos reprogramados, resultados corregidos). Las APIs cambian el
+  tipo de algunos campos (p. ej. `statistics.value` llega como int o como texto).
+- **Decisión:**
+  - Respuesta cruda tal cual en `Files/raw/<fuente>/<entidad>/ingest_date=…/<batch_id>/`.
+  - Una tabla Delta por entidad (`<fuente>_<entidad>`) con una fila por registro. Columnas:
+    - `payload`: el registro como **texto JSON**.
+    - `record_key`: clave natural.
+    - `record_hash`: SHA-256 **sin los campos volátiles** (`lastUpdated`, `currentMatchday`
+      en football-data; `update` en API-Football).
+    - `record_context`: JSON con competición, temporada… que el registro no trae dentro.
+    - Columnas de auditoría `_source`, `_config_id`, `_batch_id`, `_file_name`, `_ingested_at`.
+  - Escritura: se **añaden solo las versiones nuevas**, comparando cada registro con la
+    **última** versión de su clave.
+- **Por qué:**
+  - El texto JSON no se rompe ante cambios de tipo; Silver lo parsea con un esquema explícito.
+  - Comparar con la última versión, y no con cualquiera anterior, registra el caso A → B → A.
+    Con un MERGE por (`record_key`, `record_hash`) ese segundo A no se guardaría.
+  - Sin excluir los campos volátiles, cada refresco de football-data parecería un cambio: los
+    380 partidos tienen el mismo `lastUpdated`, que es la hora de refresco de la competición.
+- **Alternativas:**
+  - Structs inferidos con `mergeSchema`: fallan ante cambios de tipo.
+  - Sobrescritura por lote: pierde el historial.
+  - MERGE por (clave, hash): pierde el caso A → B → A.
+- **Evidencia:** segunda ejecución de la pipeline en la subetapa 2.2. `fd_competitions` leyó 13
+  registros e insertó 0; `fd_teams` leyó 40 e insertó 0; `fd_matches_history` hizo 0 llamadas.
+
+## ADR-008 — Distribución del código: wheel en el Environment `env_futbol`
+
+- **Fecha:** 2026-10-08
+- **Decisión:** `src/` se empaqueta como wheel `fabric_futbol` (versión en `pyproject.toml`) y
+  se instala como librería propia del Environment `env_futbol`, en **modo Full**.
+- **Evidencia que fija el modo:**
+  - El wheel en **modo Quick no se serializa en Git**: la carpeta del Environment solo traía
+    `Setting/Sparkcompute.yml`.
+  - En **modo Full sí**: aparece en `Libraries/CustomLibraries/` y viaja por Git y por las
+    deployment pipelines. Lo necesitan DEV, TEST y PROD (fases 8 y 9).
+  - Problema observado en modo Quick: una versión subida en Quick quedó tapada por una ruta
+    `/nfs4/pyenv-…` antigua; se resolvió subiéndola de nuevo y reiniciando la sesión.
+- **Flujo para actualizar el wheel:**
+  1. Subir la versión en `pyproject.toml`.
+  2. `python -m build --wheel`.
+  3. Reemplazar el `.whl` en `fabric/env_futbol.Environment/Libraries/CustomLibraries/`.
+  4. Commit.
+  5. *Update from Git* en el workspace.
+  6. **Publish** del Environment: Git solo actualiza el estado *staging*.
+- **Coste:** publicar en modo Full tarda entre 3 y 6 minutos. El modo Quick queda solo para
+  pruebas rápidas que no se commitean.
+- **Alternativas:**
+  - Notebook utilitario con `%run`: duplica el código fuera de `src/` y sin tests.
+  - `.py` en `Files/` del lakehouse: el código no viaja por Git.
+
+## ADR-009 — Secretos: Azure Key Vault y Variable Library
+
+- **Fecha:** 2026-10-08
+- **Decisión:**
+  - Las API keys viven en el Key Vault `kv-futbol-dev-hi01` (modelo RBAC). Los notebooks las
+    leen con `notebookutils.credentials.getSecret(url, nombre)` y nunca las imprimen ni las
+    pasan como parámetro.
+  - La URL del vault no es secreta y está en la Variable Library `vl_futbol/key_vault_url`, que
+    tendrá un conjunto de valores por entorno en la Fase 8.
+- **Permisos:** rol RBAC *Key Vault Secrets Officer* (en el portal en español, **"Agente de
+  secretos de Key Vault"**) para el usuario que ejecuta. Para solo leer bastaría *Key Vault
+  Secrets User* ("Usuario de secretos de Key Vault").
+- **Pendiente (Fase 9):** con service principals, `notebookutils.variableLibrary` no está
+  soportado (según Learn), y la identidad que lee el vault cambia. Hay que revisarlo al
+  automatizar.
+
+## ADR-010 — Orquestación guiada por metadatos, independiente del orden
+
+- **Fecha:** 2026-10-08
+- **Decisión:** `pl_bronze_ingest` encadena Lookup (`ctl_source_config`, modo *Table*) → Filter
+  (`is_active` y `source_filter`) → ForEach **secuencial** → Notebook `nb_bronze_ingest`, con la
+  etiqueta de sesión `bronze_ingest` para que los notebooks compartan sesión (alta
+  concurrencia).
+- **Restricción encontrada:** el modo *T-SQL Query (Preview)* del Lookup, que permitiría
+  `ORDER BY priority`, está deshabilitado en el workspace. En modo *Table*, el orden de las filas
+  es el orden físico de la tabla, que no está garantizado.
+- **Consecuencia de diseño:** ninguna configuración depende del orden.
+  - Cada configuración con presupuesto (`budgeted_backfill`) tiene su **cuota diaria** propia,
+    de modo que ninguna agota el presupuesto de las otras.
+  - Una dependencia (p. ej. las estadísticas por partido necesitan `fixtures`) se resuelve en la
+    ejecución siguiente: si aún no hay partidos cargados, esa configuración tiene 0 pendientes.
+  - `priority` queda como documentación y para ordenar consultas, no como mecanismo.
+- **Reintentos:** como el notebook es idempotente, la actividad Notebook se reintenta sin
+  riesgo (`retry` = 2).
+- **Lección de capacidad:** con una sesión interactiva de Spark abierta, la primera ejecución
+  falló en las 6 iteraciones con `TooManyRequestsForCapacity` (HTTP 430), antes de escribir en
+  `ctl_run_log`. Regla: cerrar las sesiones interactivas antes de lanzar la pipeline. El
+  diagnóstico de este tipo de errores se practica en la Fase 7.
+- **Alternativas:**
+  - Un notebook que planifique y devuelva la lista ordenada: añade una actividad y un notebook
+    más.
+  - Reescribir la tabla ordenada: depende de un detalle de implementación.
