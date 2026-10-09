@@ -14,6 +14,7 @@ from datetime import date
 from typing import Any
 
 from src.clients.football_data import FootballDataClient
+from src.clients.statsbomb import StatsBombClient
 from src.ingestion.planning import (
     compute_window,
     mark_completed,
@@ -35,6 +36,8 @@ class HandlerResult:
     raw_files: list[RawFile] = field(default_factory=list)
     watermark_after: str | None = None
     watermark_type: str | None = None
+    # Carga por archivos: (file_key, versión) procesados, para ctl_file_manifest
+    manifest_updates: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -133,6 +136,72 @@ def _fd_snapshot(
     return result
 
 
+# --- StatsBomb Open Data -----------------------------------------------------------------------
+
+
+def _sb_full(client: StatsBombClient, config: ConfigRow, *_: Any) -> HandlerResult:
+    if config.entity == "competitions":
+        return HandlerResult([RawFile("competitions", "competitions", client.competitions(), {})])
+    result = HandlerResult()
+    for target in config.params["targets"]:
+        comp, season = target["competition_id"], target["season_id"]
+        payload = client.matches(comp, season)
+        result.raw_files.append(RawFile("matches", f"{comp}_{season}", payload, dict(target)))
+    return result
+
+
+def match_version(match: dict) -> str:
+    """Versión de los archivos de un partido: cambia si StatsBomb corrige eventos o 360."""
+    return f"{match.get('last_updated') or ''}|{match.get('last_updated_360') or ''}"
+
+
+def plan_statsbomb_match_files(
+    client: StatsBombClient, config: ConfigRow, manifest: dict[str, str]
+) -> list[dict]:
+    """Partidos cuyos archivos hay que (re)descargar: nuevos o con versión distinta.
+
+    Respeta el orden de `targets` (Euro → PL → La Liga) y el tope `max_matches_per_run`.
+    """
+    pending: list[dict] = []
+    for target in config.params["targets"]:
+        comp, season = target["competition_id"], target["season_id"]
+        for match in sorted(client.matches(comp, season), key=lambda m: m["match_date"]):
+            if match.get("match_status") != "available":
+                continue
+            version = match_version(match)
+            file_key = f"match/{match['match_id']}"
+            if manifest.get(file_key) != version:
+                pending.append(
+                    {
+                        "match_id": match["match_id"],
+                        "competition_id": comp,
+                        "season_id": season,
+                        "file_key": file_key,
+                        "version": version,
+                        "has_360": match.get("match_status_360") == "available",
+                    }
+                )
+    return pending[: config.params.get("max_matches_per_run", len(pending))]
+
+
+def fetch_statsbomb_match_files(client: StatsBombClient, matches: list[dict]) -> HandlerResult:
+    """Descarga eventos, alineaciones y 360 (si existe) de un bloque de partidos."""
+    result = HandlerResult(watermark_type="max_last_updated")
+    for match in matches:
+        match_id = match["match_id"]
+        context = {k: match[k] for k in ("match_id", "competition_id", "season_id", "version")}
+        result.raw_files.append(RawFile("events", str(match_id), client.events(match_id), context))
+        result.raw_files.append(
+            RawFile("lineups", str(match_id), client.lineups(match_id), context)
+        )
+        if match["has_360"]:
+            three_sixty = client.three_sixty(match_id)
+            if three_sixty is not None:
+                result.raw_files.append(RawFile("three_sixty", str(match_id), three_sixty, context))
+        result.manifest_updates.append((match["file_key"], match["version"]))
+    return result
+
+
 Handler = Callable[[Any, ConfigRow, str | None, date], HandlerResult]
 
 HANDLERS: dict[tuple[str, str], Handler] = {
@@ -140,6 +209,7 @@ HANDLERS: dict[tuple[str, str], Handler] = {
     ("football_data", "window"): _fd_window,
     ("football_data", "season_full"): _fd_season_full,
     ("football_data", "snapshot"): _fd_snapshot,
+    ("statsbomb", "full"): _sb_full,
 }
 
 

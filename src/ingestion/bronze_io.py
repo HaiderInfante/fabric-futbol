@@ -125,6 +125,56 @@ def append_run_log(spark: SparkSession, entry: dict) -> None:
     ).saveAsTable("ctl_run_log")
 
 
+def read_manifest(spark: SparkSession, source: str) -> dict[str, str]:
+    rows = (
+        spark.table("ctl_file_manifest")
+        .where(F.col("source") == source)
+        .select("file_key", "source_last_updated")
+        .collect()
+    )
+    return {r["file_key"]: r["source_last_updated"] for r in rows}
+
+
+def write_manifest(
+    spark: SparkSession, source: str, updates: list[tuple[str, str]], batch_id: str
+) -> None:
+    if not updates:
+        return
+    spark.createDataFrame(
+        [(source, key, version, batch_id) for key, version in updates],
+        "source string, file_key string, source_last_updated string, batch_id string",
+    ).createOrReplaceTempView("manifest_new")
+    spark.sql("""
+        MERGE INTO ctl_file_manifest AS t
+        USING manifest_new AS s ON t.source = s.source AND t.file_key = s.file_key
+        WHEN MATCHED THEN UPDATE SET
+            source_last_updated = s.source_last_updated, batch_id = s.batch_id,
+            processed_at = current_timestamp()
+        WHEN NOT MATCHED THEN INSERT
+            (source, file_key, source_last_updated, batch_id, processed_at)
+            VALUES (s.source, s.file_key, s.source_last_updated, s.batch_id, current_timestamp())
+    """)
+
+
+class SparkBronzeWriter:
+    """Implementación de `runner.BronzeWriter` sobre lh_bronze."""
+
+    def __init__(self, spark: SparkSession) -> None:
+        self.spark = spark
+
+    def write_files(self, files: list[tuple[str, Any]]) -> int:
+        return write_raw_files(files)
+
+    def append(self, table: str, rows: list[dict]) -> int:
+        return append_new_versions(self.spark, table, rows)
+
+    def read_manifest(self, source: str) -> dict[str, str]:
+        return read_manifest(self.spark, source)
+
+    def write_manifest(self, source: str, updates: list[tuple[str, str]], batch_id: str) -> None:
+        write_manifest(self.spark, source, updates, batch_id)
+
+
 def utc_now() -> datetime:
     return datetime.now(UTC)
 

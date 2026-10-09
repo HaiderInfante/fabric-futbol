@@ -68,6 +68,13 @@ RULES: dict[tuple[str, str], Rule] = {
     ],
     ("football_data", "standings"): _season_doc_key,
     ("football_data", "scorers"): _season_doc_key,
+    ("statsbomb", "competitions"): lambda p, _: [
+        (f"{c['competition_id']}|{c['season_id']}", c) for c in p
+    ],
+    ("statsbomb", "matches"): lambda p, _: [(str(m["match_id"]), m) for m in p],
+    ("statsbomb", "events"): lambda p, _: [(e["id"], e) for e in p],
+    ("statsbomb", "lineups"): lambda p, ctx: [(f"{ctx['match_id']}|{t['team_id']}", t) for t in p],
+    ("statsbomb", "three_sixty"): lambda p, _: [(f["event_uuid"], f) for f in p],
 }
 
 

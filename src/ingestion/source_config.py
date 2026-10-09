@@ -127,7 +127,7 @@ SOURCE_CONFIGS: list[SourceConfig] = [
         params={"targets": SB_TARGETS}),
     _sb("sb_match_files", "match_files", "file_incremental", 230,
         "Eventos, alineaciones y 360 de partidos nuevos o actualizados",
-        params={"targets": SB_TARGETS, "files": ["events", "lineups", "three_sixty"]},
+        params={"targets": SB_TARGETS, "max_matches_per_run": 120, "chunk_size": 10},
         watermark_column="last_updated"),
 ]
 # fmt: on
