@@ -189,6 +189,19 @@ Formato breve: contexto → decisión → alternativas descartadas → consecuen
 - **Alternativas:**
   - Notebook utilitario con `%run`: duplica el código fuera de `src/` y sin tests.
   - `.py` en `Files/` del lakehouse: el código no viaja por Git.
+- **Riesgo abierto (2026-10-09):** en `ws_futbol_feat_bronze`, con el wheel solo en modo Full
+  (0.3.0 y 0.4.0, sincronizados por Git y publicados) y nada en Quick, **la sesión cargó una
+  versión anterior** desde una ruta `/nfs4/pyenv-…` distinta cada vez (3 de 3 publicaciones).
+  Cargó la versión correcta a la primera cuando el mismo wheel se subió **también en Quick**.
+  La causa no está confirmada; pueden ser instantáneas de Full reutilizadas por sesiones de
+  alta concurrencia, o un problema al publicar desde *staging*.
+  - **Procedimiento provisional:**
+    1. El wheel Full por Git es la versión de referencia.
+    2. Se sube el mismo wheel en Quick a mano en cada workspace.
+    3. Se verifica con `ctl_run_log.code_version`, que registra la versión que realmente corrió.
+  - **A revisar en las fases 8 y 9:** publicar con la *Environment Publish API* (la usa
+    `fabric-cicd`) y comprobar si con eso basta el modo Full. Si no basta, valorar instalar el
+    wheel desde OneLake al iniciar la sesión.
 
 ## ADR-009 — Secretos: Azure Key Vault y Variable Library
 

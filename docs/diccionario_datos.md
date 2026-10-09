@@ -206,7 +206,52 @@ Tamaños medios medidos: eventos 2,4 MB, 360 6,5 MB, alineaciones 17 KB por part
 
 ## 8. Bronze (`lh_bronze`)
 
-_Pendiente (Fase 2)._
+Formato y escritura según [ADR-007](decisiones.md#adr-007--formato-de-bronze-e-idempotencia).
+
+**Archivos crudos:** `Files/raw/<fuente>/<entidad>/ingest_date=YYYY-MM-DD/<batch_id>/<nombre>.json`.
+Cada archivo es la respuesta tal cual; en API-Football incluye el sobre `get/parameters/errors/paging`.
+
+**Esquema común de las tablas Delta** (una tabla por fuente y entidad, nombre `<fuente>_<entidad>`):
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `record_key` | string | Clave natural del registro (ver tabla siguiente) |
+| `record_hash` | string | SHA-256 del registro sin campos volátiles. Si no cambia, no se inserta una versión nueva |
+| `record_context` | string (JSON) | Contexto de la petición que el registro no trae dentro (competición, temporada, equipo, partido…) |
+| `payload` | string (JSON) | El registro tal cual lo devolvió la fuente |
+| `_source` | string | `football_data`, `api_football` o `statsbomb` |
+| `_config_id` | string | Configuración de `ctl_source_config` que lo cargó |
+| `_batch_id` | string | Lote de ingesta (`YYYYMMDDTHHMMSSZ_xxxxxxxx`) |
+| `_file_name` | string | Ruta del archivo crudo de origen |
+| `_ingested_at` | timestamp | Momento en que se insertó esta versión |
+
+Una clave puede tener **varias versiones**: la vigente es la de mayor `_ingested_at`.
+
+| Tabla | Registro | `record_key` | Configuración | Volumen (feature, 2026-10-09) |
+|---|---|---|---|---|
+| `football_data_competitions` | Competición | `id` | `fd_competitions` (full) | 13 |
+| `football_data_matches` | Partido | `id` | `fd_matches_current` (window), `fd_matches_history` (season_full) | ~970 |
+| `football_data_teams` | Equipo con plantilla y entrenador en una temporada | `<season.id>\|<team.id>` | `fd_teams` (season_full) | 104 |
+| `football_data_standings` | Tabla completa de una competición y temporada | `<code>\|<season.id>` | `fd_standings` (snapshot) | 1 versión por cambio |
+| `football_data_scorers` | Goleadores de una competición y temporada | `<code>\|<season.id>` | `fd_scorers` (snapshot) | 1 versión por cambio |
+| `api_football_fixtures` | Partido | `fixture.id` | `af_fixtures` (season_full) | 811 |
+| `api_football_teams` | Equipo y estadio en una liga y temporada | `<league>\|<season>\|<team.id>` | `af_teams` (season_full) | 64 |
+| `api_football_injuries` | Baja de un jugador en un partido | `<player.id>\|<fixture.id>` | `af_injuries` (season_full) | 5.592 |
+| `api_football_players` | Jugador en un equipo y temporada (con estadísticas) | `<league>\|<season>\|<team>\|<player.id>` | `af_players` (budgeted_backfill) | relleno en curso |
+| `api_football_fixture_statistics` | Estadísticas de los dos equipos en un partido | `fixture_id` | `af_fixture_statistics` (budgeted_backfill) | relleno en curso |
+| `api_football_fixture_players` | Estadísticas de los jugadores en un partido | `fixture_id` | `af_fixture_players` (budgeted_backfill) | relleno en curso |
+| `statsbomb_competitions` | Competición y temporada disponibles | `<competition_id>\|<season_id>` | `sb_competitions` (full) | 80 |
+| `statsbomb_matches` | Partido (con `last_updated`) | `match_id` | `sb_matches` (full) | 466 |
+| `statsbomb_events` | Evento | `id` (UUID) | `sb_match_files` (file_incremental) | 1.640.727 |
+| `statsbomb_lineups` | Alineación de un equipo en un partido | `<match_id>\|<team_id>` | `sb_match_files` | 932 |
+| `statsbomb_three_sixty` | Captura 360 de un evento | `event_uuid` | `sb_match_files` | 293.370 |
+
+Notas:
+- `api_football_players` se carga **por equipo**, páginas 1 a 3 (tope del plan gratuito). Los
+  equipos con más páginas quedan marcados como `truncated` en el watermark de `af_players`.
+- `statsbomb_*` de eventos: `record_context` incluye `match_id` y `version`
+  (`last_updated|last_updated_360`). Si StatsBomb corrige un partido, se vuelve a descargar y
+  solo se insertan los eventos que cambiaron.
 
 ## 9. Silver (`lh_silver`)
 
@@ -218,4 +263,58 @@ _Pendiente (Fase 4)._
 
 ## 11. Control y metadatos
 
-_Pendiente (Fase 2): `ctl_source_config`, `ctl_watermark`, `ctl_run_log`, `ctl_api_budget`._
+Tablas Delta en `lh_bronze`, creadas por `nb_bronze_setup` (DDL en `src/ingestion/control.py`).
+
+**`ctl_source_config`**: qué se ingiere y cómo. Se sincroniza desde `src/ingestion/source_config.py`.
+
+| Columna | Descripción |
+|---|---|
+| `config_id` | Identificador (p. ej. `fd_matches_current`) |
+| `source`, `entity` | Fuente y entidad |
+| `load_type` | `full`, `window`, `season_full`, `snapshot`, `budgeted_backfill`, `file_incremental` |
+| `params` | JSON: `targets`, `lookback_days`, `daily_quota`, `max_page`, `max_matches_per_run`… |
+| `watermark_column` | Columna de referencia del incremental (documental) |
+| `priority` | Orden lógico (documental; la pipeline no lo garantiza, ADR-010) |
+| `is_active` | Si la pipeline la ejecuta |
+| `description`, `updated_at` | Descripción y última modificación |
+
+**`ctl_watermark`**: último estado procesado por configuración.
+
+| `watermark_type` | Valor | Usado por |
+|---|---|---|
+| `date` | Fecha de la última ejecución (`YYYY-MM-DD`) | `window`, `snapshot` |
+| `completed_targets` | Lista JSON de objetivos cerrados ya cargados | `season_full` |
+| `team_page_progress` | JSON por equipo: `next_page`, `total_pages`, `truncated` | `af_players` |
+| `backfill_progress` | JSON `{"done": n, "pending": m}` | `af_fixture_*` |
+| `max_last_updated` | Mayor `last_updated` procesado | `sb_match_files` |
+
+**`ctl_run_log`**: una fila por ejecución de una configuración. Se escribe también si falla.
+
+| Columna | Descripción |
+|---|---|
+| `run_id`, `batch_id`, `pipeline_run_id` | Identificadores de la ejecución, el lote y la ejecución de la pipeline |
+| `config_id`, `source`, `entity`, `load_type` | Qué se ejecutó |
+| `started_at`, `finished_at` | Duración (UTC) |
+| `status` | `succeeded`, `budget_exhausted`, `failed`, `skipped` |
+| `api_calls` | Llamadas que consumen cuota (no incluye `/status`) |
+| `files_written`, `records_read`, `records_inserted` | Volumen: leídos frente a versiones nuevas insertadas |
+| `watermark_before`, `watermark_after` | Evidencia del incremental |
+| `error_message` | Error, si lo hubo |
+| `code_version` | Versión del wheel `fabric_futbol` que corrió (ADR-008) |
+
+**`ctl_api_budget`**: uso diario (UTC) de las APIs con límite.
+
+| Columna | Descripción |
+|---|---|
+| `source`, `budget_date` | API y día |
+| `daily_limit`, `reserve` | 100 y 10 en API-Football |
+| `calls_used` | Contador propio, conservador: máximo entre nuestras llamadas y las del proveedor |
+| `provider_used` | Uso según los headers del proveedor (no cuenta los errores de plan) |
+
+**`ctl_file_manifest`**: archivos ya procesados en la carga por archivos.
+
+| Columna | Descripción |
+|---|---|
+| `source`, `file_key` | Fuente y archivo lógico (p. ej. `match/3943043`) |
+| `source_last_updated` | Versión procesada (`last_updated\|last_updated_360`) |
+| `batch_id`, `processed_at` | Lote y momento del último procesamiento |
