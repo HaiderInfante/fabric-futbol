@@ -42,8 +42,9 @@ max_api_calls = 0
 
 # nb_bronze_ingest: ejecuta UNA fila de ctl_source_config (la pipeline lo llama una vez por
 # fila desde un ForEach). Flujo:
-#   watermark → handler (llamadas a la API) → archivos crudos en Files/raw → versiones nuevas
-#   en la tabla Bronze → watermark nuevo → una fila en ctl_run_log (también si falla).
+#   watermark → run_config (handler + archivos crudos en Files/raw + versiones nuevas en la
+#   tabla Bronze; por bloques en la carga por archivos) → watermark nuevo → una fila en
+#   ctl_run_log (también si falla).
 # Reejecutarlo no duplica datos: Bronze solo añade registros cuyo contenido cambió.
 import importlib.metadata
 import json
@@ -52,11 +53,12 @@ from pyspark.sql import functions as F
 
 from src.clients.budget import InMemoryBudget
 from src.clients.football_data import FootballDataClient
+from src.clients.statsbomb import StatsBombClient
 from src.ingestion import bronze_io
-from src.ingestion.batch import build_batch
 from src.ingestion.control import RUN_STATUS_FAILED, RUN_STATUS_SKIPPED, RUN_STATUS_SUCCEEDED
-from src.ingestion.handlers import ConfigRow, run_handler
+from src.ingestion.handlers import ConfigRow
 from src.ingestion.raw_layout import new_batch_id
+from src.ingestion.runner import run_config
 
 config_row = spark.table("ctl_source_config").where(F.col("config_id") == config_id).first()
 if config_row is None:
@@ -85,6 +87,8 @@ def build_client(source):
     if source == "football_data":
         api_key = notebookutils.credentials.getSecret(key_vault_url, "football-data-api-key")
         return FootballDataClient(api_key, budgets=run_budgets)
+    if source == "statsbomb":
+        return StatsBombClient(budgets=run_budgets)  # datos públicos: sin key
     raise NotImplementedError(f"Fuente sin cliente todavía: {source}")
 
 # METADATA ********************
@@ -117,32 +121,27 @@ try:
     else:
         watermark_before = bronze_io.read_watermark(spark, config_id)
         client = build_client(config.source)
-        result = run_handler(client, config, watermark_before, started_at.date())
-        batch = build_batch(
-            result,
-            source=config.source,
-            config_id=config_id,
+        stats = run_config(
+            bronze_io.SparkBronzeWriter(spark),
+            client,
+            config,
+            watermark_before,
             batch_id=batch_id,
-            ingest_date=started_at.date(),
+            today=started_at.date(),
         )
-        files_written = bronze_io.write_raw_files(batch.files)
-        inserted_by_table = {
-            table: bronze_io.append_new_versions(spark, table, rows)
-            for table, rows in batch.rows_by_table.items()
-        }
-        if result.watermark_after is not None:
+        if stats.watermark_after is not None:
             bronze_io.write_watermark(
-                spark, config_id, result.watermark_after, result.watermark_type, batch_id
+                spark, config_id, stats.watermark_after, stats.watermark_type, batch_id
             )
         log_entry.update(
             status=RUN_STATUS_SUCCEEDED,
-            files_written=files_written,
-            records_read=batch.records_read,
-            records_inserted=sum(inserted_by_table.values()),
+            files_written=stats.files_written,
+            records_read=stats.records_read,
+            records_inserted=stats.records_inserted,
             watermark_before=watermark_before,
-            watermark_after=result.watermark_after,
+            watermark_after=stats.watermark_after,
         )
-        summary["inserted_by_table"] = inserted_by_table
+        summary["inserted_by_table"] = stats.inserted_by_table
 except Exception as exc:
     log_entry.update(status=RUN_STATUS_FAILED, error_message=f"{type(exc).__name__}: {exc}"[:2000])
     raise
